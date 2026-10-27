@@ -18,7 +18,8 @@ export function SimulationProvider({ children }) {
   const [production, setProduction] = useState({
     arduino_connected: false,
     fabric_speed: null,
-    fabric_inspected: null
+    fabric_inspected: null,
+    loom_running: false
   });
   
   // Live Events
@@ -107,6 +108,10 @@ export function SimulationProvider({ children }) {
           // Update production data (Arduino)
           if (payload.production) {
             setProduction(payload.production);
+            setBackendStatus(prev => prev ? {
+              ...prev,
+              loom_running: payload.production.loom_running
+            } : prev);
           }
 
           // Handle NEW events (adding brand new rows to recent detections)
@@ -197,6 +202,39 @@ export function SimulationProvider({ children }) {
     };
   }, []);
 
+  const resetSession = async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/reset`, { method: 'POST' });
+      if (res.ok) {
+        const data = await res.json();
+        setStats({ totalDefects: 0, majorDefects: 0, defectCounts: {} });
+        setRecentDetections([]);
+        setCurrentDefect(null);
+        return data;
+      }
+    } catch (e) {
+      console.warn("Backend reset endpoint unavailable, resetting local state:", e);
+    }
+    setStats({ totalDefects: 0, majorDefects: 0, defectCounts: {} });
+    setRecentDetections([]);
+    setCurrentDefect(null);
+    return { deleted: 0, message: "Session reset" };
+  };
+
+  const sendLoomCommand = async (command) => {
+    const res = await fetch(`${API_BASE_URL}/api/loom/${command}`, { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.detail || `Unable to ${command} loom`);
+    }
+    setProduction(prev => ({ ...prev, ...data }));
+    setBackendStatus(prev => prev ? { ...prev, ...data } : prev);
+    return data;
+  };
+
+  const startLoom = () => sendLoomCommand('start');
+  const stopLoom = () => sendLoomCommand('stop');
+
   return (
     <SimulationContext.Provider value={{
       stats,
@@ -204,7 +242,10 @@ export function SimulationProvider({ children }) {
       production,
       recentDetections,
       currentDefect,
-      wsStatus
+      wsStatus,
+      resetSession,
+      startLoom,
+      stopLoom
     }}>
       {children}
     </SimulationContext.Provider>

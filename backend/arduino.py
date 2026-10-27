@@ -2,10 +2,14 @@
 Arduino Uno link over USB Serial.
 
 Protocol (newline-terminated text, 9600 baud):
-  PC  -> Arduino : "B1"  = MEDIUM defect beep (1 short beep)
-                   "B2"  = HIGH defect beep   (2 beeps)
+  PC  -> Arduino : "START" = run Motor 1 clockwise immediately, start Motor 2
+                   clockwise after 2 seconds, and stop both 10 seconds later
+                   "STOP"  = stop both loom motors immediately
+                   "STATUS" = request motor state
+                   "RESET" = reset counter and reverse both motors at 35% for 8 seconds
   Arduino -> PC  : "READY"                           (sent once on boot)
                    "DATA,<meters>,<speed_m_per_min>" (sent every 1 second)
+                   "STATE,RUNNING|STOPPED"
 
 The link runs in its own thread, auto-detects the Arduino port (or uses
 ARDUINO_PORT from .env), and reconnects automatically if the cable is
@@ -53,6 +57,8 @@ class ArduinoLink:
         self.fabric_meters = None      # total fabric inspected (m), from Arduino
         self.fabric_speed = None       # m/min, from Arduino
         self.last_data_time = 0.0
+        self.loom_running = False
+        self.motor_state = "STOPPED"
 
     # ---------- lifecycle ----------
     def start(self):
@@ -70,10 +76,26 @@ class ArduinoLink:
         self._close()
 
     # ---------- public API ----------
-    def beep(self, severity):
-        """Send a beep command for a MEDIUM or HIGH defect."""
-        cmd = "B2" if severity == "HIGH" else "B1"
-        self._send(cmd)
+    def start_motor(self):
+        if not self._send("START"):
+            return False
+        self.loom_running = True
+        self.motor_state = "START_M1_CW_WAIT_M2"
+        return True
+
+    def stop_motor(self):
+        if not self._send("STOP"):
+            return False
+        self.loom_running = False
+        self.motor_state = "STOPPED"
+        return True
+
+    def reset_motor(self):
+        if not self._send("RESET"):
+            return False
+        self.loom_running = True
+        self.motor_state = "RESET_BOTH_CCW"
+        return True
 
     def status(self):
         fresh = (time.time() - self.last_data_time) < 5
@@ -82,6 +104,8 @@ class ArduinoLink:
             "arduino_port": self.port,
             "fabric_speed": self.fabric_speed if fresh else None,
             "fabric_inspected": self.fabric_meters,
+            "loom_running": self.loom_running,
+            "motor_state": self.motor_state,
         }
 
     # ---------- internals ----------
@@ -138,6 +162,16 @@ class ArduinoLink:
                     self.last_data_time = time.time()
                 except ValueError:
                     pass
+        elif line.startswith("STATE,"):
+            motor_state = line.split(",", 1)[1]
+            self.loom_running = motor_state in (
+                "START_M1_CW_WAIT_M2",
+                "START_BOTH_CW",
+                "RESET_BOTH_CCW",
+                "RUNNING",
+            )
+            self.motor_state = motor_state
+            print(f"[ARDUINO] <- {line}")
         elif line:
             print(f"[ARDUINO] <- {line}")
 

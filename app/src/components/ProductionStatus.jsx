@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Activity, Cpu, Gauge, Ruler, Clock, Layers } from 'lucide-react';
 import { useSimulation } from '../context/SimulationContext';
 
 export default function ProductionStatus() {
@@ -19,57 +20,80 @@ export default function ProductionStatus() {
     return () => clearInterval(interval);
   }, []);
 
+  const isRunning = backendStatus?.status === 'running';
+  const isArduino = Boolean(production?.arduino_connected);
+
+  const items = [
+    {
+      label: 'Loom Identifier',
+      value: backendStatus?.loom_id || 'LOOM 01',
+      icon: Activity,
+      highlight: true
+    },
+    {
+      label: 'Operation Status',
+      value: isRunning ? 'RUNNING' : 'OFFLINE',
+      icon: Activity,
+      color: isRunning ? 'text-[#10B981]' : 'text-[#EF4444]'
+    },
+    {
+      label: 'Arduino Controller',
+      value: isArduino ? 'CONNECTED' : 'NOT CONNECTED',
+      icon: Cpu,
+      color: isArduino ? 'text-[#10B981]' : 'text-[#EF4444]'
+    },
+    {
+      label: 'Fabric Speed',
+      value: production?.fabric_speed != null ? `${production.fabric_speed.toFixed(2)} m/min` : 'N/A',
+      icon: Gauge
+    },
+    {
+      label: 'Fabric Inspected',
+      value: production?.fabric_inspected != null ? `${production.fabric_inspected.toFixed(2)} m` : 'N/A',
+      icon: Ruler
+    },
+    {
+      label: 'Current Roll',
+      value: backendStatus?.roll_id || 'ROLL-A01',
+      icon: Layers
+    },
+    {
+      label: 'Inspection Runtime',
+      value: runtimeStr,
+      icon: Clock,
+      mono: true
+    }
+  ];
+
   return (
-    <div className="bg-[#FFFFFF] border border-[#E5E5E5] rounded p-1 flex flex-col h-full min-h-0">
-      <div className="px-4 py-2 bg-[#F7F7F7] border-b border-[#E5E5E5] flex-shrink-0">
-        <h2 className="text-sm font-bold text-[#111111]">CURRENT PRODUCTION STATUS</h2>
+    <div className="bg-white rounded-2xl p-5 border border-[#E5E7EB] shadow-xs flex flex-col h-full">
+      <div className="flex items-center gap-2 pb-3 mb-4 border-b border-[#F1F5F9]">
+        <div className="w-7 h-7 rounded-lg bg-orange-50 text-[#EA580C] flex items-center justify-center">
+          <Activity className="w-4 h-4 stroke-[2.5]" />
+        </div>
+        <h2 className="text-sm font-bold text-[#0F172A]">CURRENT PRODUCTION STATUS</h2>
       </div>
 
-      <div className="flex-1 p-4 flex flex-col justify-between text-sm overflow-y-auto min-h-0">
-        <div className="flex justify-between items-center py-2 border-b border-[#E5E5E5]">
-          <span className="text-[#666666]">Loom:</span>
-          <span className="font-bold text-[#111111]">{backendStatus?.loom_id || 'LOOM-01'}</span>
-        </div>
-        <div className="flex justify-between items-center py-2 border-b border-[#E5E5E5]">
-          <span className="text-[#666666]">Status:</span>
-          {backendStatus?.status === 'running' ? (
-             <span className="font-bold text-[#16A34A]">RUNNING</span>
-          ) : (
-             <span className="font-bold text-[#DC2626]">OFFLINE</span>
-          )}
-        </div>
-        <div className="flex justify-between items-center py-2 border-b border-[#E5E5E5]">
-          <span className="text-[#666666]">Arduino:</span>
-          {production?.arduino_connected ? (
-             <span className="font-bold text-[#16A34A]">CONNECTED</span>
-          ) : (
-             <span className="font-bold text-[#DC2626]">NOT CONNECTED</span>
-          )}
-        </div>
-        <div className="flex justify-between items-center py-2 border-b border-[#E5E5E5]">
-          <span className="text-[#666666]">Fabric Speed:</span>
-          {production?.fabric_speed != null ? (
-             <span className="font-bold text-[#111111]">{production.fabric_speed.toFixed(2)} m/min</span>
-          ) : (
-             <span className="font-bold text-[#666666]">—</span>
-          )}
-        </div>
-        <div className="flex justify-between items-center py-2 border-b border-[#E5E5E5]">
-          <span className="text-[#666666]">Fabric Inspected:</span>
-          {production?.fabric_inspected != null ? (
-             <span className="font-bold text-[#111111]">{production.fabric_inspected.toFixed(2)} m</span>
-          ) : (
-             <span className="font-bold text-[#666666]">Not available</span>
-          )}
-        </div>
-        <div className="flex justify-between items-center py-2 border-b border-[#E5E5E5]">
-          <span className="text-[#666666]">Current Roll:</span>
-          <span className="font-bold text-[#111111]">{backendStatus?.roll_id || '—'}</span>
-        </div>
-        <div className="flex justify-between items-center py-2">
-          <span className="text-[#666666]">Inspection Time:</span>
-          <span className="font-bold text-[#111111] font-mono">{runtimeStr}</span>
-        </div>
+      <div className="flex-1 flex flex-col justify-between gap-2.5">
+        {items.map((it, idx) => {
+          const Icon = it.icon;
+          return (
+            <div
+              key={idx}
+              className="flex items-center justify-between py-2 border-b border-slate-100 last:border-b-0 text-xs"
+            >
+              <div className="flex items-center gap-2 text-[#64748B] font-medium">
+                <Icon className="w-3.5 h-3.5 text-slate-400" />
+                <span>{it.label}:</span>
+              </div>
+              <span
+                className={`font-bold ${it.color || 'text-[#0F172A]'} ${it.mono ? 'font-mono' : ''}`}
+              >
+                {it.value}
+              </span>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

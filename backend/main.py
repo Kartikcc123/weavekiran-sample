@@ -1,21 +1,33 @@
 import asyncio
+import winsound
+
+BEEP_CONFIDENCE_THRESHOLD = 0.35  # Only beep when confidence >= this value
+BEEP_FREQUENCY = 1000  # Hz
+BEEP_DURATION = 300   # milliseconds
 import time
 import cv2
 import json
 from datetime import datetime
+from pathlib import Path
 from typing import List
 from detector import detect
 from database import db
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from camera import get_camera
 from detector import detect
 from arduino import arduino
 
 app = FastAPI(title="Fabric AI Backend")
+
+# The Render web service serves the compiled React dashboard as well as the
+# API.  Keeping this path absolute means it works even though Render starts
+# Uvicorn from the `backend` directory.
+FRONTEND_DIST = Path(__file__).resolve().parents[1] / "app" / "dist"
 
 app.add_middleware(
     CORSMiddleware,
@@ -49,10 +61,6 @@ class State:
         self.track_timeout = 2.0 # seconds before track is CLOSED
         self.iou_threshold = 0.3
         self.distance_threshold = 150 # pixels fallback
-
-        # Arduino buzzer
-        self.last_beep_time = 0.0
-        self.beep_cooldown = 1.0 # min seconds between beeps (avoids beep bursts)
 
 state = State()
 
@@ -105,16 +113,6 @@ def get_severity(confidence):
     if confidence >= 0.80: return "HIGH"
     if confidence >= 0.60: return "MEDIUM"
     return "LOW"
-
-def maybe_alert(track, now):
-    """Beep ONCE per physical defect (track) when it first reaches MEDIUM/HIGH."""
-    if track.get("alerted") or track["severity"] not in ("MEDIUM", "HIGH"):
-        return
-    track["alerted"] = True # mark even if cooldown skips, so it never beeps later
-    if now - state.last_beep_time >= state.beep_cooldown:
-        state.last_beep_time = now
-        arduino.beep(track["severity"])
-        print(f"[ALERT] Beep for track_id={track['track_id']} severity={track['severity']}")
 
 def match_track(d, tracks, iou_thresh, dist_thresh):
     cx, cy = get_center(d["bbox"])
@@ -202,7 +200,6 @@ async def async_background_loop():
                         
                     match["max_confidence"] = new_conf
                     match["severity"] = get_severity(new_conf)
-                    maybe_alert(match, current_time)
                     current_detections.append(match)
                     
                 else:
@@ -224,7 +221,6 @@ async def async_background_loop():
                         "last_seen": current_time,
                         "start_time": current_time,
                         "reported_major": False,
-                        "alerted": False,
                         "fabric_position": arduino.fabric_meters
                     }
                     
@@ -232,10 +228,15 @@ async def async_background_loop():
                     print(f"[TRACK] New track created track_id={tid}")
                     print(f"[EVENT] NEW DEFECT event_id={event_id} class={new_track['class_name']} confidence={new_track['max_confidence']}")
                     
+                    # Beep alert: only when confidence is above the threshold
+                    if new_track["max_confidence"] >= BEEP_CONFIDENCE_THRESHOLD:
+                        print(f"[BEEP] Defect confidence {new_track['max_confidence']:.2f} >= {BEEP_CONFIDENCE_THRESHOLD} — sounding alert")
+                        loop.run_in_executor(None, winsound.Beep, BEEP_FREQUENCY, BEEP_DURATION)
+                    else:
+                        print(f"[BEEP] Defect confidence {new_track['max_confidence']:.2f} < {BEEP_CONFIDENCE_THRESHOLD} — no alert")
+                    
                     state.active_tracks[tid] = new_track
                     current_detections.append(new_track)
-                    maybe_alert(new_track, current_time)
-                    
                     # Increment stats once per physical defect
                     state.total_defects += 1
                     if new_track["severity"] == "HIGH":
@@ -333,6 +334,7 @@ async def startup_event():
     
 @app.on_event("shutdown")
 async def shutdown_event():
+    arduino.stop_motor()
     arduino.stop()
     db.disconnect()
 
@@ -378,6 +380,43 @@ def get_status():
         **arduino.status()
     }
 
+@app.post("/api/loom/start")
+def start_loom():
+    if not arduino.connected:
+        raise HTTPException(status_code=503, detail="Arduino is not connected")
+    if not arduino.start_motor():
+        raise HTTPException(status_code=503, detail="Unable to send START to Arduino")
+    return {"ok": True, "loom_running": True, **arduino.status()}
+
+@app.post("/api/loom/stop")
+def stop_loom():
+    if not arduino.connected:
+        raise HTTPException(status_code=503, detail="Arduino is not connected")
+    if not arduino.stop_motor():
+        raise HTTPException(status_code=503, detail="Unable to send STOP to Arduino")
+    return {"ok": True, "loom_running": False, **arduino.status()}
+
+@app.post("/api/reset")
+async def reset_session():
+    if not arduino.connected:
+        raise HTTPException(status_code=503, detail="Arduino is not connected")
+    if not arduino.reset_motor():
+        raise HTTPException(status_code=503, detail="Unable to send RESET to Arduino")
+
+    state.total_defects = 0
+    state.major_defects = 0
+    state.defect_counts = {
+        "Stain": 0,
+        "Thread": 0,
+        "Warp_Weft": 0,
+        "hole": 0,
+        "seam": 0
+    }
+    state.active_tracks.clear()
+    state.next_track_id = 1
+
+    return {"ok": True, "deleted": 0, "message": "Session reset; reverse mode active", **arduino.status()}
+
 @app.get("/stats")
 async def get_stats():
     # Return actual database statistics
@@ -393,3 +432,32 @@ async def get_defects(limit: int = 50):
 async def get_defects_today():
     defects = await db.get_today_defects()
     return defects
+
+
+# Vite's BrowserRouter requests a URL such as `/visitor-question` directly
+# when a user refreshes or opens a shared link.  A server normally has no file
+# at that path and returns 404 before React gets a chance to render.  Mount the
+# built files and return index.html for frontend paths so React can handle the
+# route client-side.  This is intentionally registered after every API route.
+if FRONTEND_DIST.is_dir():
+    assets_dir = FRONTEND_DIST / "assets"
+    if assets_dir.is_dir():
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="frontend-assets")
+
+    @app.get("/{frontend_path:path}", include_in_schema=False)
+    async def serve_frontend(frontend_path: str):
+        if frontend_path.startswith(("api/", "ws/")):
+            raise HTTPException(status_code=404, detail="Not found")
+
+        # Vite copies files from `public` (for example /defects/*.jpg) without
+        # putting them under /assets.  Serve those real files before falling
+        # back to the React entry point.
+        requested_file = (FRONTEND_DIST / frontend_path).resolve()
+        try:
+            requested_file.relative_to(FRONTEND_DIST.resolve())
+        except ValueError:
+            raise HTTPException(status_code=404, detail="Not found")
+        if requested_file.is_file():
+            return FileResponse(requested_file)
+
+        return FileResponse(FRONTEND_DIST / "index.html")

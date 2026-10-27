@@ -1,83 +1,132 @@
-import React from 'react';
+import React, { useState, useRef } from 'react';
+import { Camera, Maximize2, RefreshCw, AlertCircle } from 'lucide-react';
 import { useSimulation } from '../context/SimulationContext';
 import { API_BASE_URL } from '../config';
 
 export default function LiveInspection() {
-  const { wsStatus, currentDefect } = useSimulation();
+  const { wsStatus } = useSimulation();
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [streamError, setStreamError] = useState(false);
+  const containerRef = useRef(null);
+
+  const toggleFullscreen = () => {
+    if (!containerRef.current) return;
+    if (!document.fullscreenElement) {
+      containerRef.current.requestFullscreen().catch(err => {
+        console.error("Fullscreen error:", err);
+      });
+      setIsFullscreen(true);
+    } else {
+      document.exitFullscreen().catch(err => {
+        console.error("Exit fullscreen error:", err);
+      });
+      setIsFullscreen(false);
+    }
+  };
+
+  const handleRefreshStream = () => {
+    setStreamError(false);
+  };
 
   return (
-    <div className="flex flex-col h-full bg-[#FFFFFF] border border-[#E5E5E5] rounded p-1">
+    <div
+      ref={containerRef}
+      className={`bg-white rounded-2xl p-4 border border-[#E5E7EB] shadow-xs flex flex-col h-full min-h-[340px] ${
+        isFullscreen ? 'p-6 bg-black' : ''
+      }`}
+    >
       {/* Header */}
-      <div className="flex justify-between items-center px-3 py-2 bg-[#F7F7F7] border-b border-[#E5E5E5]">
-        <h2 className="text-sm font-bold text-[#111111]">LIVE INSPECTION</h2>
-        <div className="flex items-center gap-1.5">
-          {wsStatus === 'ONLINE' ? (
-            <>
-              <span className="h-2 w-2 rounded-full bg-[#16A34A]"></span>
-              <span className="text-xs font-bold text-[#16A34A]">AI ENGINE ONLINE</span>
-            </>
-          ) : wsStatus === 'CONNECTING' ? (
-            <>
-              <span className="h-2 w-2 rounded-full bg-[#D97706] animate-pulse"></span>
-              <span className="text-xs font-bold text-[#D97706]">CONNECTING...</span>
-            </>
-          ) : (
-            <>
-              <span className="h-2 w-2 rounded-full bg-[#DC2626]"></span>
-              <span className="text-xs font-bold text-[#DC2626]">DATA CONNECTION LOST</span>
-            </>
-          )}
-        </div>
-      </div>
+      <div className="flex items-center justify-between pb-3 mb-3 border-b border-[#F1F5F9]">
+        <div className="flex items-center gap-3">
+          <div className="w-6 h-6 rounded-md bg-[#FFF7ED] text-[#EA580C] flex items-center justify-center">
+            <Camera className="w-4 h-4 stroke-[2.5]" />
+          </div>
+          <span className="text-sm font-bold text-[#0F172A]">Live Camera Feed</span>
 
-      {/* Camera Area */}
-      <div className="flex-1 relative bg-[#111111] overflow-hidden flex items-center justify-center">
-        
-        {wsStatus === 'ONLINE' ? (
-          <img 
-            src={`${API_BASE_URL}/video`} 
-            alt="Live Fabric Feed"
-            className="w-full h-full object-contain"
-            onError={(e) => {
-              e.target.style.display = 'none';
-              e.target.nextSibling.style.display = 'flex';
-            }}
-          />
-        ) : null}
-
-        {/* Fallback for when video fails or offline */}
-        <div className="absolute inset-0 bg-[#F7F7F7] flex flex-col items-center justify-center" style={{ display: wsStatus === 'ONLINE' ? 'none' : 'flex' }}>
-          <div className="absolute inset-0 opacity-10" style={{ 
-            backgroundImage: 'radial-gradient(#111 1px, transparent 1px)',
-            backgroundSize: '10px 10px'
-          }}></div>
-          
-          <div className="bg-[#FFFFFF] border border-[#E5E5E5] p-4 text-center z-10 rounded">
-            <h3 className="font-bold text-[#111111] mb-1">CAMERA OFFLINE</h3>
-            <p className="text-xs text-[#666666]">Waiting for backend video stream...</p>
+          {/* Live Status Indicator */}
+          <div className="flex items-center gap-1.5 pl-2 border-l border-gray-200">
+            {wsStatus === 'ONLINE' ? (
+              <>
+                <span className="w-2 h-2 rounded-full bg-[#10B981] animate-pulse" />
+                <span className="text-xs font-bold text-[#10B981]">Live</span>
+              </>
+            ) : wsStatus === 'CONNECTING' ? (
+              <>
+                <span className="w-2 h-2 rounded-full bg-[#F59E0B] animate-pulse" />
+                <span className="text-xs font-bold text-[#F59E0B]">Connecting</span>
+              </>
+            ) : (
+              <>
+                <span className="w-2 h-2 rounded-full bg-[#EF4444]" />
+                <span className="text-xs font-bold text-[#EF4444]">Offline</span>
+              </>
+            )}
           </div>
         </div>
 
-        {/* CURRENT DEFECT OVERLAY */}
-        {wsStatus === 'ONLINE' && (
-          <div className="absolute top-4 left-4 z-20">
-            {currentDefect ? (
-              <div className="bg-[#FFFFFF] border-2 border-[#DC2626] p-2 shadow-sm min-w-[150px]">
-                <div className="text-[10px] font-bold text-[#DC2626] uppercase mb-1">CURRENT DEFECT</div>
-                <div className="text-lg font-bold text-[#111111] uppercase leading-none">{currentDefect.type}</div>
-                <div className="flex justify-between items-end mt-2">
-                  <span className="text-sm font-bold text-[#666666]">{(currentDefect.confidence * 100).toFixed(0)}%</span>
-                  <span className={`text-xs font-bold ${currentDefect.severity === 'HIGH' ? 'text-[#DC2626]' : 'text-[#D97706]'}`}>
-                    {currentDefect.severity}
-                  </span>
-                </div>
+        {/* Action icons on right */}
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={handleRefreshStream}
+            title="Refresh Camera Feed"
+            className="p-1.5 rounded-lg text-[#64748B] hover:text-[#0F172A] hover:bg-gray-100 transition-colors"
+          >
+            <RefreshCw className="w-4 h-4" />
+          </button>
+          <button
+            type="button"
+            onClick={toggleFullscreen}
+            title={isFullscreen ? "Exit Fullscreen" : "Fullscreen View"}
+            className="p-1.5 rounded-lg text-[#64748B] hover:text-[#0F172A] hover:bg-gray-100 transition-colors"
+          >
+            <Maximize2 className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+
+      {/* Video Viewport */}
+      <div className="flex-1 relative bg-[#0F172A] rounded-xl overflow-hidden flex items-center justify-center border border-gray-200 shadow-inner min-h-[260px]">
+        {wsStatus === 'ONLINE' && !streamError ? (
+          <img
+            src={`${API_BASE_URL}/video`}
+            alt="Live Fabric Feed"
+            className="w-full h-full object-contain select-none"
+            onError={() => setStreamError(true)}
+          />
+        ) : null}
+
+        {/* Fallback View when Offline or Error */}
+        {(wsStatus !== 'ONLINE' || streamError) && (
+          <div className="absolute inset-0 bg-[#0F172A] flex flex-col items-center justify-center p-6 text-center">
+            {/* Subtle tech grid background */}
+            <div
+              className="absolute inset-0 opacity-10"
+              style={{
+                backgroundImage: 'radial-gradient(#FFF 1px, transparent 1px)',
+                backgroundSize: '16px 16px'
+              }}
+            />
+
+            <div className="relative z-10 bg-white/10 backdrop-blur-md border border-white/20 p-5 rounded-2xl max-w-sm flex flex-col items-center shadow-lg">
+              <div className="w-12 h-12 rounded-full bg-red-500/20 text-[#EF4444] flex items-center justify-center mb-3">
+                <AlertCircle className="w-6 h-6 stroke-[2]" />
               </div>
-            ) : (
-              <div className="bg-[#FFFFFF] border-2 border-[#16A34A] p-2 shadow-sm min-w-[150px]">
-                <div className="text-[10px] font-bold text-[#16A34A] uppercase mb-1">CURRENT STATUS</div>
-                <div className="text-sm font-bold text-[#111111]">NO DEFECT DETECTED</div>
-              </div>
-            )}
+              <h3 className="text-base font-bold text-white mb-1 tracking-tight">
+                CAMERA FEED OFFLINE
+              </h3>
+              <p className="text-xs text-slate-300 mb-4 leading-relaxed">
+                Connect your DroidCam or USB inspection camera and verify the backend AI service is running.
+              </p>
+              <button
+                type="button"
+                onClick={handleRefreshStream}
+                className="px-4 py-2 rounded-xl bg-gradient-to-r from-[#EA580C] to-[#F97316] text-white text-xs font-bold hover:shadow-md transition-all flex items-center gap-1.5"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>Retry Video Stream</span>
+              </button>
+            </div>
           </div>
         )}
       </div>

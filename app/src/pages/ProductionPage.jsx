@@ -1,19 +1,17 @@
 import React from 'react';
 import ProductionStatus from '../components/ProductionStatus';
 import DefectSummary from '../components/DefectSummary';
-import RecentDefects from '../components/RecentDefects';
+import RecentInspectionGallery from '../components/RecentInspectionGallery';
 
 export default function ProductionPage() {
   return (
-    <div className="h-full p-4 flex flex-col gap-4 bg-[#F7F7F7]">
-      <div className="flex-none grid grid-cols-2 gap-4">
+    <div className="h-full overflow-y-auto p-4 md:p-6 flex flex-col gap-5 bg-[#F5F6F8]">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 items-stretch">
         <ProductionStatus />
         <DefectSummary />
       </div>
-      
-      <div className="flex-1">
-        <RecentDefects />
-      </div>
+
+      <RecentInspectionGallery />
     </div>
   );
 }

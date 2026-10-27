@@ -1,31 +1,40 @@
 import React from 'react';
+import HeroBanner from '../components/HeroBanner';
+import KpiCards from '../components/KpiCards';
 import LiveInspection from '../components/LiveInspection';
-import ProductionStatus from '../components/ProductionStatus';
-import DefectSummary from '../components/DefectSummary';
-import RecentDefects from '../components/RecentDefects';
+import CurrentDetectionCard from '../components/CurrentDetectionCard';
+import DefectClassesCard from '../components/DefectClassesCard';
+import RecentInspectionGallery from '../components/RecentInspectionGallery';
 
 export default function Dashboard() {
   return (
-    <div className="h-full p-4 flex flex-col gap-4 bg-[#F7F7F7] min-h-0">
-      {/* Top Row: Live Inspection (Large) + Production Status (Small) */}
-      <div className="flex-1 flex gap-4 min-h-0">
-        <div className="w-3/4 flex flex-col min-h-0">
+    <div className="h-full overflow-y-auto p-4 md:p-6 flex flex-col gap-5 bg-[#F5F6F8]">
+      {/* 1. Top Hero Banner */}
+      <HeroBanner />
+
+      {/* 2. Live Camera Feed (Large) + Right Column Cards */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
+        {/* Left: Live Inspection Feed (Spans 8 cols on large screens) */}
+        <div className="lg:col-span-8 flex flex-col">
           <LiveInspection />
         </div>
-        <div className="w-1/4 flex flex-col gap-4 min-h-0">
-          <div className="flex-1 min-h-0">
-            <ProductionStatus />
+
+        {/* Right: Current Detection + Defect Classes (Spans 4 cols) */}
+        <div className="lg:col-span-4 flex flex-col gap-5 justify-between">
+          <div className="flex-1">
+            <CurrentDetectionCard />
           </div>
-          <div className="flex-1 min-h-0">
-            <DefectSummary />
+          <div className="flex-1">
+            <DefectClassesCard />
           </div>
         </div>
       </div>
 
-      {/* Bottom Row: Recent Defects */}
-      <div className="h-[25vh] min-h-[150px] flex-shrink-0">
-        <RecentDefects />
-      </div>
+      {/* 3. Four KPI Metric Cards Strip (Below Camera Screen) */}
+      <KpiCards />
+
+      {/* 4. Bottom Section: Recent Inspection Gallery */}
+      <RecentInspectionGallery />
     </div>
   );
 }
