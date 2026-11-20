@@ -13,8 +13,8 @@ export default function Header({ onToggleSidebar }) {
     return () => clearInterval(timer);
   }, []);
 
-  const isRunning = backendStatus?.loom_running === true;
-  const isArduinoConnected = Boolean(production?.arduino_connected);
+  const isRunning = Boolean(production?.loom_running ?? backendStatus?.loom_running);
+  const isArduinoConnected = Boolean(production?.arduino_connected ?? backendStatus?.arduino_connected);
 
   return (
     <>

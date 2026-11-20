@@ -1,17 +1,23 @@
 import asyncio
-import winsound
+import base64
+from collections import Counter
+import json
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import List
+
+import cv2
+import numpy as np
+
+try:
+    import winsound
+except ImportError:
+    winsound = None
 
 BEEP_CONFIDENCE_THRESHOLD = 0.35  # Only beep when confidence >= this value
 BEEP_FREQUENCY = 1000  # Hz
 BEEP_DURATION = 300   # milliseconds
-import time
-import cv2
-import json
-from datetime import datetime
-from pathlib import Path
-from typing import List
-from detector import detect
-from database import db
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, StreamingResponse
@@ -20,18 +26,19 @@ from fastapi.staticfiles import StaticFiles
 
 from camera import get_camera
 from detector import detect
+from database import db
 from arduino import arduino
 
 app = FastAPI(title="Fabric AI Backend")
 
-# The Render web service serves the compiled React dashboard as well as the
-# API.  Keeping this path absolute means it works even though Render starts
-# Uvicorn from the `backend` directory.
+# The Render / Cloud Run web service serves the compiled React dashboard as well
+# as the API. Keeping this path absolute means it works even when Uvicorn starts
+# from the `backend` directory.
 FRONTEND_DIST = Path(__file__).resolve().parents[1] / "app" / "dist"
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Allow all origins for local dev
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -39,11 +46,15 @@ app.add_middleware(
 
 camera = get_camera()
 
+
 class State:
     def __init__(self):
         self.latest_frame_bytes = None
         self.is_running = True
-        
+        self.inspection_active = True
+        self.last_browser_frame_time = 0.0
+        self.frame_lock = asyncio.Lock()
+
         # Stats
         self.total_defects = 0
         self.major_defects = 0
@@ -54,13 +65,14 @@ class State:
             "hole": 0,
             "seam": 0
         }
-        
+
         # Tracking
-        self.active_tracks = {} # track_id -> dict
+        self.active_tracks = {}  # track_id -> dict
         self.next_track_id = 1
-        self.track_timeout = 2.0 # seconds before track is CLOSED
+        self.track_timeout = 2.0  # seconds before track is CLOSED
         self.iou_threshold = 0.3
-        self.distance_threshold = 150 # pixels fallback
+        self.distance_threshold = 150  # pixels fallback
+
 
 state = State()
 
@@ -144,199 +156,279 @@ def match_track(d, tracks, iou_thresh, dist_thresh):
             
     return None
 
+def build_production_status():
+    return arduino.status()
+
+
+async def process_frame(frame, force_broadcast=False):
+    loop = asyncio.get_running_loop()
+    detections = await loop.run_in_executor(None, detect, frame)
+    current_time = time.time()
+
+    # 1. Cleanup old tracks (LOST -> CLOSED)
+    closed_keys = [
+        tid for tid, t in state.active_tracks.items()
+        if current_time - t["last_seen"] > state.track_timeout
+    ]
+    for k in closed_keys:
+        print(f"[TRACK] track_id={k} CLOSED")
+        t = state.active_tracks[k]
+        asyncio.create_task(
+            db.update_defect_status(t["event_id"], "CLOSED", t["max_confidence"], t["severity"])
+        )
+        del state.active_tracks[k]
+
+    new_events = []
+    current_detections = []
+
+    # 2. Process detections
+    for d in detections:
+        match = match_track(d, state.active_tracks, state.iou_threshold, state.distance_threshold)
+
+        if match:
+            # Update TRACKING state
+            match["bbox"] = d["bbox"]
+            match["last_seen"] = current_time
+
+            # Class smoothing
+            match["class_history"].append(d["class_name"])
+            if len(match["class_history"]) > 20:
+                match["class_history"].pop(0)
+
+            # Majority vote
+            most_common_class = Counter(match["class_history"]).most_common(1)[0][0]
+            match["class_name"] = most_common_class
+
+            # Update max confidence and check severity jump
+            old_conf = match["max_confidence"]
+            new_conf = max(old_conf, d["confidence"])
+
+            if not match.get("reported_major", False) and new_conf >= 0.80:
+                state.major_defects += 1  # Upgraded to HIGH
+                match["reported_major"] = True
+
+            match["max_confidence"] = new_conf
+            match["severity"] = get_severity(new_conf)
+            current_detections.append(match)
+
+        else:
+            # NEW DEFECT
+            tid = state.next_track_id
+            state.next_track_id += 1
+
+            event_id = f"DEF-{datetime.now().strftime('%Y%m%d')}-{tid:06d}"
+
+            new_track = {
+                "track_id": tid,
+                "event_id": event_id,
+                "class_id": d["class_id"],
+                "class_name": d["class_name"],
+                "class_history": [d["class_name"]],
+                "max_confidence": d["confidence"],
+                "bbox": d["bbox"],
+                "severity": get_severity(d["confidence"]),
+                "last_seen": current_time,
+                "start_time": current_time,
+                "reported_major": False,
+                "fabric_position": arduino.fabric_meters
+            }
+
+            print(f"[YOLO] {new_track['class_name']} {new_track['max_confidence']}")
+            print(f"[TRACK] New track created track_id={tid}")
+            print(f"[EVENT] NEW DEFECT event_id={event_id} class={new_track['class_name']} confidence={new_track['max_confidence']}")
+
+            # Beep alert on local Windows host if winsound is available
+            if new_track["max_confidence"] >= BEEP_CONFIDENCE_THRESHOLD:
+                if winsound is not None:
+                    loop.run_in_executor(None, winsound.Beep, BEEP_FREQUENCY, BEEP_DURATION)
+
+            state.active_tracks[tid] = new_track
+            current_detections.append(new_track)
+            # Increment stats once per physical defect
+            state.total_defects += 1
+            if new_track["severity"] == "HIGH":
+                state.major_defects += 1
+                new_track["reported_major"] = True
+
+            if new_track["class_name"] in state.defect_counts:
+                state.defect_counts[new_track["class_name"]] += 1
+            else:
+                state.defect_counts[new_track["class_name"]] = 1
+
+            event_data = {
+                "event_id": event_id,
+                "loom_id": "LOOM-01",
+                "roll_id": None,
+                "track_id": tid,
+                "defect_type": new_track["class_name"],
+                "class_id": d["class_id"],
+                "confidence": new_track["max_confidence"],
+                "severity": new_track["severity"],
+                "timestamp": datetime.now().isoformat(),
+                "bbox": new_track["bbox"],
+                "fabric_position": new_track["fabric_position"],
+                "status": "OPEN"
+            }
+
+            asyncio.create_task(db.save_defect_event(event_data))
+
+            # Send to frontend as NEW event
+            new_events.append(event_data)
+
+        # Draw on frame using CURRENT confidence
+        bbox = d["bbox"]
+        x1, y1, x2, y2 = bbox["x1"], bbox["y1"], bbox["x2"], bbox["y2"]
+        label = f'{d["class_name"]} {d["confidence"]:.2f}'
+
+        color = (
+            (0, 0, 200)
+            if d["confidence"] >= 0.80
+            else ((0, 165, 255) if d["confidence"] >= 0.60 else (128, 128, 128))
+        )
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+        cv2.putText(frame, label, (x1, max(25, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+
+    # Encode annotated frame for /video stream fallback
+    success, encoded = cv2.imencode(".jpg", frame)
+    if success:
+        state.latest_frame_bytes = encoded.tobytes()
+
+    frame_h, frame_w = frame.shape[:2]
+    frontend_current = [
+        {
+            "track_id": t["track_id"],
+            "class_name": t["class_name"],
+            "confidence": t["max_confidence"],
+            "severity": t["severity"],
+            "bbox": t["bbox"],
+        }
+        for t in state.active_tracks.values()
+    ]
+    frame_detections = [
+        {
+            "class_name": d["class_name"],
+            "confidence": d["confidence"],
+            "severity": get_severity(d["confidence"]),
+            "bbox": d["bbox"],
+        }
+        for d in detections
+    ]
+
+    event_payload = {
+        "timestamp": datetime.now().isoformat(),
+        "loom_id": "LOOM-01",
+        "current_detections": frontend_current,
+        "frame_detections": frame_detections,
+        "frame_size": {"width": frame_w, "height": frame_h},
+        "new_events": new_events,
+        "stats": {
+            "total_defects": state.total_defects,
+            "major_defects": state.major_defects,
+            "defect_counts": state.defect_counts
+        },
+        "production": build_production_status()
+    }
+
+    if force_broadcast or len(new_events) > 0:
+        await manager.broadcast(event_payload)
+        if len(new_events) > 0:
+            print("[WS] Sent new defect event data")
+
+    return event_payload
+
+
 async def async_background_loop():
     loop = asyncio.get_running_loop()
-    last_ws_send = 0
-    ws_throttle = 1.0 / 10.0 # 10 updates per sec max
-    
-    from collections import Counter
-    
+    last_ws_send = 0.0
+    ws_throttle = 1.0 / 10.0  # 10 updates per sec max
+
     while state.is_running:
         try:
-            success, frame = await loop.run_in_executor(None, camera.read)
-            if not success:
-                await asyncio.sleep(0.01)
-                continue
-    
-            detections = await loop.run_in_executor(None, detect, frame)
             current_time = time.time()
-            
-            # 1. Cleanup old tracks (LOST -> CLOSED)
-            closed_keys = [tid for tid, t in state.active_tracks.items() if current_time - t["last_seen"] > state.track_timeout]
-            for k in closed_keys:
-                print(f"[TRACK] track_id={k} CLOSED")
-                t = state.active_tracks[k]
-                asyncio.create_task(db.update_defect_status(t["event_id"], "CLOSED", t["max_confidence"], t["severity"]))
-                del state.active_tracks[k]
-    
-            new_events = []
-            current_detections = []
-            
-            # 2. Process detections
-            for d in detections:
-                match = match_track(d, state.active_tracks, state.iou_threshold, state.distance_threshold)
-                
-                if match:
-                    # Update TRACKING state
-                    match["bbox"] = d["bbox"]
-                    match["last_seen"] = current_time
-                    
-                    # Class smoothing
-                    match["class_history"].append(d["class_name"])
-                    if len(match["class_history"]) > 20:
-                        match["class_history"].pop(0)
-                        
-                    # Majority vote
-                    most_common_class = Counter(match["class_history"]).most_common(1)[0][0]
-                    match["class_name"] = most_common_class
-                    
-                    # Update max confidence and check severity jump
-                    old_conf = match["max_confidence"]
-                    new_conf = max(old_conf, d["confidence"])
-                    
-                    if not match.get("reported_major", False) and new_conf >= 0.80:
-                        state.major_defects += 1 # Upgraded to HIGH
-                        match["reported_major"] = True
-                        
-                    match["max_confidence"] = new_conf
-                    match["severity"] = get_severity(new_conf)
-                    current_detections.append(match)
-                    
-                else:
-                    # NEW DEFECT
-                    tid = state.next_track_id
-                    state.next_track_id += 1
-                    
-                    event_id = f"DEF-{datetime.now().strftime('%Y%m%d')}-{tid:06d}"
-                    
-                    new_track = {
-                        "track_id": tid,
-                        "event_id": event_id,
-                        "class_id": d["class_id"],
-                        "class_name": d["class_name"],
-                        "class_history": [d["class_name"]],
-                        "max_confidence": d["confidence"],
-                        "bbox": d["bbox"],
-                        "severity": get_severity(d["confidence"]),
-                        "last_seen": current_time,
-                        "start_time": current_time,
-                        "reported_major": False,
-                        "fabric_position": arduino.fabric_meters
-                    }
-                    
-                    print(f"[YOLO] {new_track['class_name']} {new_track['max_confidence']}")
-                    print(f"[TRACK] New track created track_id={tid}")
-                    print(f"[EVENT] NEW DEFECT event_id={event_id} class={new_track['class_name']} confidence={new_track['max_confidence']}")
-                    
-                    # Beep alert: only when confidence is above the threshold
-                    if new_track["max_confidence"] >= BEEP_CONFIDENCE_THRESHOLD:
-                        print(f"[BEEP] Defect confidence {new_track['max_confidence']:.2f} >= {BEEP_CONFIDENCE_THRESHOLD} — sounding alert")
-                        loop.run_in_executor(None, winsound.Beep, BEEP_FREQUENCY, BEEP_DURATION)
-                    else:
-                        print(f"[BEEP] Defect confidence {new_track['max_confidence']:.2f} < {BEEP_CONFIDENCE_THRESHOLD} — no alert")
-                    
-                    state.active_tracks[tid] = new_track
-                    current_detections.append(new_track)
-                    # Increment stats once per physical defect
-                    state.total_defects += 1
-                    if new_track["severity"] == "HIGH":
-                        state.major_defects += 1
-                        new_track["reported_major"] = True
-                        
-                    if new_track["class_name"] in state.defect_counts:
-                        state.defect_counts[new_track["class_name"]] += 1
-                        
-                    event_data = {
-                        "event_id": event_id,
-                        "loom_id": "LOOM-01",
-                        "roll_id": None,
-                        "track_id": tid,
-                        "defect_type": new_track["class_name"],
-                        "class_id": d["class_id"],
-                        "confidence": new_track["max_confidence"],
-                        "severity": new_track["severity"],
-                        "timestamp": datetime.now().isoformat(),
-                        "bbox": new_track["bbox"],
-                        "fabric_position": new_track["fabric_position"],
-                        "status": "OPEN"
-                    }
-                    
-                    asyncio.create_task(db.save_defect_event(event_data))
-                    
-                    # Send to frontend as NEW event
-                    new_events.append(event_data)
-    
-                # Draw on frame using CURRENT confidence
-                bbox = d["bbox"]
-                x1, y1, x2, y2 = bbox["x1"], bbox["y1"], bbox["x2"], bbox["y2"]
-                label = f'{d["class_name"]} {d["confidence"]:.2f}'
-                
-                color = (0, 0, 200) if d["confidence"] >= 0.80 else ((0, 165, 255) if d["confidence"] >= 0.60 else (128, 128, 128))
-                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                cv2.putText(frame, label, (x1, max(25, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
 
-            # 3. Broadcast events
-            # Send if there are new events OR if there are current detections (throttled) OR if tracks just cleared
-            should_send = False
-            if len(new_events) > 0:
-                should_send = True
-            elif current_time - last_ws_send > ws_throttle:
-                should_send = True
-    
+            # If browser camera is actively streaming frames (within last 2.5s),
+            # skip reading the server's local camera so they don't conflict.
+            if current_time - state.last_browser_frame_time < 2.5:
+                await asyncio.sleep(0.1)
+                continue
+
+            if not state.inspection_active or camera is None:
+                # Still broadcast status updates periodically even when camera is idle
+                if current_time - last_ws_send >= 1.0:
+                    await manager.broadcast({
+                        "timestamp": datetime.now().isoformat(),
+                        "loom_id": "LOOM-01",
+                        "current_detections": [],
+                        "frame_detections": [],
+                        "new_events": [],
+                        "stats": {
+                            "total_defects": state.total_defects,
+                            "major_defects": state.major_defects,
+                            "defect_counts": state.defect_counts
+                        },
+                        "production": build_production_status()
+                    })
+                    last_ws_send = current_time
+                await asyncio.sleep(0.1)
+                continue
+
+            success, frame = await loop.run_in_executor(None, camera.read)
+            if not success or frame is None:
+                if current_time - last_ws_send >= 1.0:
+                    await manager.broadcast({
+                        "timestamp": datetime.now().isoformat(),
+                        "loom_id": "LOOM-01",
+                        "current_detections": [],
+                        "frame_detections": [],
+                        "new_events": [],
+                        "stats": {
+                            "total_defects": state.total_defects,
+                            "major_defects": state.major_defects,
+                            "defect_counts": state.defect_counts
+                        },
+                        "production": build_production_status()
+                    })
+                    last_ws_send = current_time
+                await asyncio.sleep(0.05)
+                continue
+
+            should_send = (current_time - last_ws_send) > ws_throttle
+            async with state.frame_lock:
+                await process_frame(frame, force_broadcast=should_send)
             if should_send:
-                # For current_detections payload, only send necessary UI fields
-                frontend_current = [
-                    {
-                        "track_id": t["track_id"],
-                        "class_name": t["class_name"],
-                        "confidence": t["max_confidence"],
-                        "severity": t["severity"]
-                    }
-                    for t in state.active_tracks.values()
-                ]
-    
-                event_payload = {
-                    "timestamp": datetime.now().isoformat(),
-                    "loom_id": "LOOM-01",
-                    "current_detections": frontend_current,
-                    "new_events": new_events,
-                    "stats": {
-                        "total_defects": state.total_defects,
-                        "major_defects": state.major_defects,
-                        "defect_counts": state.defect_counts
-                    },
-                    "production": arduino.status()
-                }
-                
-                
-                await manager.broadcast(event_payload)
-                last_ws_send = current_time
-                if len(new_events) > 0:
-                    print("[WS] Sent new defect event data")
-    
-            # Encode frame
-            success, encoded = cv2.imencode(".jpg", frame)
-            if success:
-                state.latest_frame_bytes = encoded.tobytes()
-    
-            # Yield thread
+                last_ws_send = time.time()
+
             await asyncio.sleep(0.01)
-        
+
         except Exception as e:
             print(f"[ERROR] Exception in background loop: {e}")
             await asyncio.sleep(0.5)
 
+
 @app.on_event("startup")
 async def startup_event():
     await db.connect()
+    # Hydrate today's saved stats from MongoDB so existing data is never lost on restart
+    if db.connected:
+        try:
+            saved_stats = await db.get_stats()
+            state.total_defects = saved_stats.get("total_defects", 0)
+            state.major_defects = saved_stats.get("major_defects", 0)
+            for k, v in (saved_stats.get("defect_counts") or {}).items():
+                state.defect_counts[k] = v
+            print(f"[STARTUP] Restored today's stats from MongoDB: total={state.total_defects}, major={state.major_defects}")
+        except Exception as e:
+            print(f"[STARTUP] Could not hydrate initial stats: {e}")
     arduino.start()
     asyncio.create_task(async_background_loop())
-    
+
+
 @app.on_event("shutdown")
 async def shutdown_event():
     arduino.stop_motor()
     arduino.stop()
     db.disconnect()
+
 
 async def video_generator():
     while True:
@@ -347,11 +439,17 @@ async def video_generator():
                 + state.latest_frame_bytes
                 + b"\r\n"
             )
-        await asyncio.sleep(0.033) # ~30fps max
+        await asyncio.sleep(0.033)  # ~30fps max
 
-@app.get("/")
-def root():
-    return {"status": "online", "service": "Fabric AI"}
+
+@app.get("/api/health")
+def health():
+    return {
+        "status": "online",
+        "service": "Weave Kiran Fabric AI",
+        "database_connected": db.connected,
+    }
+
 
 @app.get("/video")
 def video():
@@ -360,14 +458,61 @@ def video():
         media_type="multipart/x-mixed-replace; boundary=frame"
     )
 
+
+def _decode_browser_frame(data_str: str):
+    if "," in data_str:
+        data_str = data_str.split(",", 1)[1]
+    raw_bytes = base64.b64decode(data_str)
+    arr = np.frombuffer(raw_bytes, dtype=np.uint8)
+    return cv2.imdecode(arr, cv2.IMREAD_COLOR)
+
+
 @app.websocket("/ws/detections")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         while True:
-            await websocket.receive_text()
+            message = await websocket.receive()
+            if message.get("type") == "websocket.disconnect":
+                break
+
+            frame = None
+            if message.get("bytes"):
+                arr = np.frombuffer(message["bytes"], dtype=np.uint8)
+                frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+            elif message.get("text"):
+                try:
+                    data = json.loads(message["text"])
+                    if data.get("type") == "frame" and data.get("image"):
+                        frame = _decode_browser_frame(data["image"])
+                except Exception:
+                    frame = None
+
+            if frame is not None:
+                state.last_browser_frame_time = time.time()
+                if state.inspection_active:
+                    async with state.frame_lock:
+                        await process_frame(frame, force_broadcast=True)
+                else:
+                    await websocket.send_json({
+                        "timestamp": datetime.now().isoformat(),
+                        "loom_id": "LOOM-01",
+                        "current_detections": [],
+                        "frame_detections": [],
+                        "new_events": [],
+                        "stats": {
+                            "total_defects": state.total_defects,
+                            "major_defects": state.major_defects,
+                            "defect_counts": state.defect_counts
+                        },
+                        "production": build_production_status()
+                    })
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+    except Exception as e:
+        print(f"[WS] Disconnected with error: {e}")
+        manager.disconnect(websocket)
+
 
 @app.get("/status")
 def get_status():
@@ -375,33 +520,58 @@ def get_status():
         "status": "running",
         "loom_id": "LOOM-01",
         "model": "YOLO26s",
-        "camera": "DroidCam",
+        "camera": "Browser / DroidCam",
         "camera_index": 1,
-        **arduino.status()
+        **build_production_status()
     }
 
+
 @app.post("/api/loom/start")
-def start_loom():
+async def start_loom():
     if not arduino.connected:
-        raise HTTPException(status_code=503, detail="Arduino is not connected")
+        raise HTTPException(status_code=503, detail="Arduino is not connected from your device")
     if not arduino.start_motor():
-        raise HTTPException(status_code=503, detail="Unable to send START to Arduino")
-    return {"ok": True, "loom_running": True, **arduino.status()}
+        raise HTTPException(status_code=503, detail="Arduino is not connected from your device")
+    prod = build_production_status()
+    await manager.broadcast({
+        "timestamp": datetime.now().isoformat(),
+        "loom_id": "LOOM-01",
+        "stats": {
+            "total_defects": state.total_defects,
+            "major_defects": state.major_defects,
+            "defect_counts": state.defect_counts
+        },
+        "production": prod
+    })
+    return {"ok": True, **prod}
+
 
 @app.post("/api/loom/stop")
-def stop_loom():
+async def stop_loom():
     if not arduino.connected:
-        raise HTTPException(status_code=503, detail="Arduino is not connected")
+        raise HTTPException(status_code=503, detail="Arduino is not connected from your device")
     if not arduino.stop_motor():
-        raise HTTPException(status_code=503, detail="Unable to send STOP to Arduino")
-    return {"ok": True, "loom_running": False, **arduino.status()}
+        raise HTTPException(status_code=503, detail="Arduino is not connected from your device")
+    prod = build_production_status()
+    await manager.broadcast({
+        "timestamp": datetime.now().isoformat(),
+        "loom_id": "LOOM-01",
+        "stats": {
+            "total_defects": state.total_defects,
+            "major_defects": state.major_defects,
+            "defect_counts": state.defect_counts
+        },
+        "production": prod
+    })
+    return {"ok": True, **prod}
+
 
 @app.post("/api/reset")
 async def reset_session():
     if not arduino.connected:
-        raise HTTPException(status_code=503, detail="Arduino is not connected")
+        raise HTTPException(status_code=503, detail="Arduino is not connected from your device")
     if not arduino.reset_motor():
-        raise HTTPException(status_code=503, detail="Unable to send RESET to Arduino")
+        raise HTTPException(status_code=503, detail="Arduino is not connected from your device")
 
     state.total_defects = 0
     state.major_defects = 0
@@ -415,43 +585,57 @@ async def reset_session():
     state.active_tracks.clear()
     state.next_track_id = 1
 
-    return {"ok": True, "deleted": 0, "message": "Session reset; reverse mode active", **arduino.status()}
+    prod = build_production_status()
+    await manager.broadcast({
+        "timestamp": datetime.now().isoformat(),
+        "loom_id": "LOOM-01",
+        "current_detections": [],
+        "frame_detections": [],
+        "stats": {
+            "total_defects": state.total_defects,
+            "major_defects": state.major_defects,
+            "defect_counts": state.defect_counts
+        },
+        "production": prod
+    })
+
+    # Stored database history is preserved (deleted: 0) so existing data is never lost
+    return {"ok": True, "deleted": 0, "message": "Session reset; reverse mode active", **prod}
+
 
 @app.get("/stats")
 async def get_stats():
-    # Return actual database statistics
     stats = await db.get_stats()
     return stats
+
 
 @app.get("/api/defects")
 async def get_defects(limit: int = 50):
     defects = await db.get_recent_defects(limit)
     return defects
-    
+
+
 @app.get("/api/defects/today")
 async def get_defects_today():
     defects = await db.get_today_defects()
     return defects
 
 
-# Vite's BrowserRouter requests a URL such as `/visitor-question` directly
-# when a user refreshes or opens a shared link.  A server normally has no file
-# at that path and returns 404 before React gets a chance to render.  Mount the
-# built files and return index.html for frontend paths so React can handle the
-# route client-side.  This is intentionally registered after every API route.
+# Serve the built React dashboard at `/` and all client-side routes when `app/dist` exists
 if FRONTEND_DIST.is_dir():
     assets_dir = FRONTEND_DIST / "assets"
     if assets_dir.is_dir():
         app.mount("/assets", StaticFiles(directory=assets_dir), name="frontend-assets")
+
+    @app.get("/", include_in_schema=False)
+    async def serve_root():
+        return FileResponse(FRONTEND_DIST / "index.html")
 
     @app.get("/{frontend_path:path}", include_in_schema=False)
     async def serve_frontend(frontend_path: str):
         if frontend_path.startswith(("api/", "ws/")):
             raise HTTPException(status_code=404, detail="Not found")
 
-        # Vite copies files from `public` (for example /defects/*.jpg) without
-        # putting them under /assets.  Serve those real files before falling
-        # back to the React entry point.
         requested_file = (FRONTEND_DIST / frontend_path).resolve()
         try:
             requested_file.relative_to(FRONTEND_DIST.resolve())
@@ -461,3 +645,7 @@ if FRONTEND_DIST.is_dir():
             return FileResponse(requested_file)
 
         return FileResponse(FRONTEND_DIST / "index.html")
+else:
+    @app.get("/")
+    def root():
+        return {"status": "online", "service": "Fabric AI"}

@@ -115,6 +115,7 @@ class ArduinoLink:
                 return False
             try:
                 self._ser.write((text + "\n").encode())
+                self._ser.flush()
                 print(f"[ARDUINO] -> {text}")
                 return True
             except Exception as e:
@@ -139,7 +140,7 @@ class ArduinoLink:
         if not port:
             return False
         try:
-            ser = serial.Serial(port, ARDUINO_BAUD, timeout=1)
+            ser = serial.Serial(port, ARDUINO_BAUD, timeout=0.15, write_timeout=1.0)
             time.sleep(2)  # Uno resets when the port opens; wait for bootloader
             ser.reset_input_buffer()
             with self._lock:
@@ -188,9 +189,14 @@ class ArduinoLink:
                     time.sleep(3)
                     continue
             try:
-                raw = self._ser.readline()
+                raw = b""
+                with self._lock:
+                    if self._ser and self._ser.in_waiting > 0:
+                        raw = self._ser.readline()
                 if raw:
                     self._handle_line(raw.decode(errors="ignore").strip())
+                else:
+                    time.sleep(0.03)
             except Exception as e:
                 print(f"[ARDUINO] Read failed: {e}")
                 self._close()
