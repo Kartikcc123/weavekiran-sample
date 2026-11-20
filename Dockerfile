@@ -23,8 +23,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install CPU-only PyTorch first (keeps image fast & small for Cloud Run)
+# Install CPU-only PyTorch first (pre-install pure-Python deps from PyPI to avoid PyTorch index metadata bugs)
 RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir typing-extensions jinja2 fsspec networkx sympy filelock mpmath numpy pillow && \
     pip install --no-cache-dir torch torchvision \
     --index-url https://download.pytorch.org/whl/cpu \
     --extra-index-url https://pypi.org/simple
