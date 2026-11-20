@@ -1353,7 +1353,7 @@ def generate_report_pdf_bytes(report: Dict[str, Any]) -> bytes:
                 Paragraph(m["meter_position"], cell_style),
                 Paragraph(m["bbox_display"], cell_style),
             ])
-        maj_table = Table(maj_rows, colWidths=[32 * mm, 24 * mm, 18 * mm, 36 * mm, 27 * mm, 43 * mm], repeatRows=1)
+        maj_table = Table(maj_rows, colWidths=[35 * mm, 24 * mm, 21 * mm, 33 * mm, 26 * mm, 41 * mm], repeatRows=1)
         maj_table.setStyle(
             TableStyle([
                 ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#FEF2F2")),
@@ -1575,7 +1575,7 @@ def generate_report_pdf_bytes(report: Dict[str, Any]) -> bytes:
 
     log_table = Table(
         log_rows,
-        colWidths=[10 * mm, 32 * mm, 34 * mm, 28 * mm, 16 * mm, 16 * mm, 18 * mm, 26 * mm],
+        colWidths=[9 * mm, 35 * mm, 31 * mm, 26 * mm, 20 * mm, 16 * mm, 21 * mm, 22 * mm],
         repeatRows=1,
     )
     log_table.setStyle(
