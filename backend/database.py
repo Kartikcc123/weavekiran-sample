@@ -105,6 +105,31 @@ class Database:
         except Exception as e:
             print(f"[DATABASE ERROR] Failed to get recent defects: {e}")
             return []
+
+    async def get_next_track_id(self):
+        if not self.connected:
+            return 1
+        try:
+            doc = await self.db.defects.find_one(sort=[("track_id", -1)])
+            max_tid = int(doc.get("track_id", 0)) if doc and doc.get("track_id") is not None else 0
+            total_count = await self.db.defects.count_documents({})
+            return max(max_tid, total_count) + 1
+        except Exception as e:
+            print(f"[DATABASE ERROR] Failed to get next track_id: {e}")
+            return 1
+
+    async def get_all_defects(self, limit=1000):
+        if not self.connected:
+            return []
+        try:
+            cursor = self.db.defects.find().sort("timestamp", -1).limit(limit)
+            defects = await cursor.to_list(length=limit)
+            for d in defects:
+                d["_id"] = str(d["_id"])
+            return defects
+        except Exception as e:
+            print(f"[DATABASE ERROR] Failed to get all defects: {e}")
+            return []
             
     async def get_today_defects(self):
         if not self.connected:

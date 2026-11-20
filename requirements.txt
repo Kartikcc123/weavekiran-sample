@@ -6,5 +6,6 @@ opencv-python
 motor
 dnspython
 certifi
+reportlab
 python-dotenv
 pyserial

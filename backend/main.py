@@ -5,7 +5,7 @@ import json
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 import cv2
 import numpy as np
@@ -20,7 +20,7 @@ BEEP_FREQUENCY = 1000  # Hz
 BEEP_DURATION = 300   # milliseconds
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -28,6 +28,7 @@ from camera import get_camera
 from detector import detect
 from database import db
 from arduino import arduino
+from report_service import build_report_data, generate_report_pdf_bytes, map_canonical_category
 
 app = FastAPI(title="Fabric AI Backend")
 
@@ -72,9 +73,24 @@ class State:
         self.track_timeout = 2.0  # seconds before track is CLOSED
         self.iou_threshold = 0.3
         self.distance_threshold = 150  # pixels fallback
+        self.recent_evidence = []  # recent live-captured defect image evidence
 
 
 state = State()
+
+
+def _encode_evidence_data_url(img, max_w=420, quality=72):
+    try:
+        h, w = img.shape[:2]
+        if w > max_w and w > 0:
+            scale = max_w / float(w)
+            img = cv2.resize(img, (max_w, max(1, int(h * scale))))
+        ok, buf = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+        if ok:
+            return "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode("ascii")
+    except Exception:
+        pass
+    return None
 
 class ConnectionManager:
     def __init__(self):
@@ -162,6 +178,7 @@ def build_production_status():
 
 async def process_frame(frame, force_broadcast=False):
     loop = asyncio.get_running_loop()
+    raw_frame = frame.copy()
     detections = await loop.run_in_executor(None, detect, frame)
     current_time = time.time()
 
@@ -218,6 +235,26 @@ async def process_frame(frame, force_broadcast=False):
 
             event_id = f"DEF-{datetime.now().strftime('%Y%m%d')}-{tid:06d}"
 
+            annotated_copy = raw_frame.copy()
+            bx = d["bbox"]
+            c_col = (
+                (0, 0, 200)
+                if d["confidence"] >= 0.80
+                else ((0, 165, 255) if d["confidence"] >= 0.60 else (128, 128, 128))
+            )
+            cv2.rectangle(annotated_copy, (bx["x1"], bx["y1"]), (bx["x2"], bx["y2"]), c_col, 2)
+            cv2.putText(
+                annotated_copy,
+                f'{d["class_name"]} {d["confidence"]:.2f}',
+                (bx["x1"], max(25, bx["y1"] - 8)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                c_col,
+                2,
+            )
+            orig_data_url = _encode_evidence_data_url(raw_frame)
+            ann_data_url = _encode_evidence_data_url(annotated_copy)
+
             new_track = {
                 "track_id": tid,
                 "event_id": event_id,
@@ -255,6 +292,7 @@ async def process_frame(frame, force_broadcast=False):
             else:
                 state.defect_counts[new_track["class_name"]] = 1
 
+            now_iso = datetime.now().isoformat()
             event_data = {
                 "event_id": event_id,
                 "loom_id": "LOOM-01",
@@ -264,11 +302,29 @@ async def process_frame(frame, force_broadcast=False):
                 "class_id": d["class_id"],
                 "confidence": new_track["max_confidence"],
                 "severity": new_track["severity"],
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": now_iso,
                 "bbox": new_track["bbox"],
                 "fabric_position": new_track["fabric_position"],
-                "status": "OPEN"
+                "status": "OPEN",
+                "original_image": orig_data_url,
+                "annotated_image": ann_data_url,
             }
+
+            if orig_data_url or ann_data_url:
+                pos_val = new_track["fabric_position"]
+                state.recent_evidence.insert(0, {
+                    "event_id": event_id,
+                    "defect_name": map_canonical_category(new_track["class_name"]),
+                    "raw_defect_type": new_track["class_name"],
+                    "confidence_pct": round(new_track["max_confidence"] * 100, 1),
+                    "severity": new_track["severity"],
+                    "timestamp_display": datetime.now().strftime("%d %b %Y, %I:%M:%S %p"),
+                    "meter_position": f"{float(pos_val):.2f} m" if (pos_val is not None and float(pos_val) > 0) else ("0.00 m" if pos_val == 0 else "Unmeasured"),
+                    "bbox": new_track["bbox"],
+                    "original_image": orig_data_url,
+                    "annotated_image": ann_data_url,
+                })
+                state.recent_evidence = state.recent_evidence[:12]
 
             asyncio.create_task(db.save_defect_event(event_data))
 
@@ -408,7 +464,7 @@ async def async_background_loop():
 @app.on_event("startup")
 async def startup_event():
     await db.connect()
-    # Hydrate today's saved stats from MongoDB so existing data is never lost on restart
+    # Hydrate today's saved stats & next unique track_id from MongoDB so existing data is never lost or duplicated
     if db.connected:
         try:
             saved_stats = await db.get_stats()
@@ -416,7 +472,11 @@ async def startup_event():
             state.major_defects = saved_stats.get("major_defects", 0)
             for k, v in (saved_stats.get("defect_counts") or {}).items():
                 state.defect_counts[k] = v
-            print(f"[STARTUP] Restored today's stats from MongoDB: total={state.total_defects}, major={state.major_defects}")
+            state.next_track_id = await db.get_next_track_id()
+            print(
+                f"[STARTUP] Restored stats from MongoDB: total={state.total_defects}, "
+                f"major={state.major_defects}, next_track_id={state.next_track_id}"
+            )
         except Exception as e:
             print(f"[STARTUP] Could not hydrate initial stats: {e}")
     arduino.start()
@@ -619,6 +679,55 @@ async def get_defects(limit: int = 50):
 async def get_defects_today():
     defects = await db.get_today_defects()
     return defects
+
+
+@app.get("/api/report")
+async def get_quality_report(
+    scope: str = "latest_session",
+    roll_length_m: Optional[float] = None,
+    fabric_price_per_m: Optional[float] = None,
+    rework_cost_per_m: Optional[float] = None,
+):
+    all_defects = await db.get_all_defects(limit=2000)
+    report = build_report_data(
+        all_db_defects=all_defects,
+        arduino_status=build_production_status(),
+        scope=scope,
+        configured_roll_length_m=roll_length_m,
+        fabric_price_per_m=fabric_price_per_m,
+        rework_cost_per_m=rework_cost_per_m,
+        recent_evidence=state.recent_evidence,
+    )
+    return report
+
+
+@app.get("/api/report/pdf")
+async def download_quality_report_pdf(
+    scope: str = "latest_session",
+    roll_length_m: Optional[float] = None,
+    fabric_price_per_m: Optional[float] = None,
+    rework_cost_per_m: Optional[float] = None,
+):
+    all_defects = await db.get_all_defects(limit=2000)
+    report = build_report_data(
+        all_db_defects=all_defects,
+        arduino_status=build_production_status(),
+        scope=scope,
+        configured_roll_length_m=roll_length_m,
+        fabric_price_per_m=fabric_price_per_m,
+        rework_cost_per_m=rework_cost_per_m,
+        recent_evidence=state.recent_evidence,
+    )
+    pdf_bytes = generate_report_pdf_bytes(report)
+    filename = f"{report['summary']['report_id']}_Weave_Kiran_Quality_Report.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 # Serve the built React dashboard at `/` and all client-side routes when `app/dist` exists
