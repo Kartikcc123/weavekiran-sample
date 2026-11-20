@@ -59,6 +59,8 @@ class ArduinoLink:
         self.last_data_time = 0.0
         self.loom_running = False
         self.motor_state = "STOPPED"
+        self.rounds_completed = 0
+        self.last_round_time = None
 
     # ---------- lifecycle ----------
     def start(self):
@@ -84,10 +86,14 @@ class ArduinoLink:
         return True
 
     def stop_motor(self):
+        was_running = self.loom_running
         if not self._send("STOP"):
             return False
         self.loom_running = False
         self.motor_state = "STOPPED"
+        if was_running:
+            self.rounds_completed += 1
+            self.last_round_time = time.strftime("%I:%M:%S %p")
         return True
 
     def reset_motor(self):
@@ -106,6 +112,8 @@ class ArduinoLink:
             "fabric_inspected": self.fabric_meters,
             "loom_running": self.loom_running,
             "motor_state": self.motor_state,
+            "rounds_completed": self.rounds_completed,
+            "last_round_time": self.last_round_time,
         }
 
     # ---------- internals ----------
@@ -163,7 +171,15 @@ class ArduinoLink:
                     self.last_data_time = time.time()
                 except ValueError:
                     pass
+        elif line.startswith("ACK,MATERIAL_OVER"):
+            if self.loom_running:
+                self.rounds_completed += 1
+                self.last_round_time = time.strftime("%I:%M:%S %p")
+            self.loom_running = False
+            self.motor_state = "STOPPED"
+            print(f"[ARDUINO] <- {line} (Roller round completed)")
         elif line.startswith("STATE,"):
+            was_running = self.loom_running
             motor_state = line.split(",", 1)[1]
             self.loom_running = motor_state in (
                 "START_M1_CW_WAIT_M2",
@@ -171,6 +187,9 @@ class ArduinoLink:
                 "RESET_BOTH_CCW",
                 "RUNNING",
             )
+            if was_running and not self.loom_running:
+                self.rounds_completed += 1
+                self.last_round_time = time.strftime("%I:%M:%S %p")
             self.motor_state = motor_state
             print(f"[ARDUINO] <- {line}")
         elif line:

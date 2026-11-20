@@ -1,6 +1,6 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
-import { Home, Camera, BarChart3, Clock, Sparkles, Leaf } from 'lucide-react';
+import { Home, Camera, BarChart3, Clock, FileCheck2, Sparkles, Leaf } from 'lucide-react';
 import WeaveKiranLogo from './WeaveKiranLogo';
 import sidebarBg from '../assets/sidebar_bg.jpg';
 
@@ -32,6 +32,13 @@ export default function Sidebar({ className = "" }) {
       label: 'History',
       sublabel: null,
       icon: Clock,
+      end: false
+    },
+    {
+      to: '/report',
+      label: 'Report',
+      sublabel: 'Final Quality Report',
+      icon: FileCheck2,
       end: false
     }
   ];

@@ -9,6 +9,7 @@ import Dashboard from './pages/Dashboard';
 import LiveInspectionPage from './pages/LiveInspectionPage';
 import ProductionPage from './pages/ProductionPage';
 import HistoryPage from './pages/HistoryPage';
+import ReportPage from './pages/ReportPage';
 
 function App() {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -45,6 +46,7 @@ function App() {
                 <Route path="/live" element={<LiveInspectionPage />} />
                 <Route path="/production" element={<ProductionPage />} />
                 <Route path="/history" element={<HistoryPage />} />
+                <Route path="/report" element={<ReportPage />} />
                 <Route path="/visitor-question" element={<Dashboard />} />
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Routes>
