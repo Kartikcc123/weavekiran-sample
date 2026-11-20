@@ -4,9 +4,14 @@ from datetime import datetime
 from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
 
+try:
+    import certifi
+except ImportError:
+    certifi = None
+
 load_dotenv()
 
-MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
+MONGODB_URI = os.getenv("MONGODB_URI", "mongodb+srv://kartikagarwal4256_db_user:m896hrhEiet4Z1m3@cluster0.sd5pjrp.mongodb.net/")
 DB_NAME = "fabric_ai"
 
 class Database:
@@ -17,7 +22,10 @@ class Database:
 
     async def connect(self):
         try:
-            self.client = AsyncIOMotorClient(MONGODB_URI, serverSelectionTimeoutMS=2000)
+            kwargs = {"serverSelectionTimeoutMS": 5000}
+            if MONGODB_URI.startswith("mongodb+srv://") and certifi is not None:
+                kwargs["tlsCAFile"] = certifi.where()
+            self.client = AsyncIOMotorClient(MONGODB_URI, **kwargs)
             # Verify connection
             await self.client.admin.command('ping')
             self.db = self.client[DB_NAME]
