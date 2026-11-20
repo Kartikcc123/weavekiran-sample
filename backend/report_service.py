@@ -370,8 +370,17 @@ def build_report_data(
         cnt = cat_counts.get(ckey, 0)
         share_pct = round((cnt / total_defects) * 100.0, 1) if total_defects > 0 else 0.0
         sc = cat_sev_counts[ckey]
+        cat_records = [r for r in scoped_records if r["category"] == ckey]
+        cat_avg_conf = (
+            round(sum(r["confidence_pct"] for r in cat_records) / len(cat_records), 1)
+            if cat_records else 0.0
+        )
+        cat_peak_record = max(cat_records, key=lambda r: r["confidence_pct"]) if cat_records else None
+        cat_peak_conf = cat_peak_record["confidence_pct"] if cat_peak_record else 0.0
+
         if cnt == 0:
-            sev_label = "None Detected"
+            sev_label = "0 Predictions"
+            sample_proof = "No detections in this session"
         else:
             parts = []
             if sc["HIGH"] > 0:
@@ -380,13 +389,22 @@ def build_report_data(
                 parts.append(f"{sc['MEDIUM']} Medium")
             if sc["LOW"] > 0:
                 parts.append(f"{sc['LOW']} Low")
-            sev_label = f"{cdef['default_severity']} ({', '.join(parts)})"
+            sev_label = ", ".join(parts)
+            pb = (cat_peak_record.get("bbox") or {}) if cat_peak_record else {}
+            sample_proof = (
+                f"{cat_peak_record['event_id']} • Conf: {cat_peak_conf}% • "
+                f"Box: ({pb.get('x1', 0)},{pb.get('y1', 0)})–({pb.get('x2', 0)},{pb.get('y2', 0)}) • "
+                f"{cat_peak_record['timestamp_display']}"
+            )
 
         row = {
             "defect_name": ckey,
             "count": cnt,
             "share_pct": share_pct,
+            "avg_confidence_pct": cat_avg_conf,
+            "peak_confidence_pct": cat_peak_conf,
             "severity": sev_label,
+            "sample_proof": sample_proof,
             "what_it_means": cdef["what_it_means"],
             "why_it_matters": cdef["why_it_matters"],
             "factory_action": cdef["factory_action"],
@@ -395,6 +413,31 @@ def build_report_data(
         if cnt > max_cat_count and cnt > 0:
             max_cat_count = cnt
             most_frequent_defect = row
+
+    # Top Verified Prediction Proofs (sorted by highest confidence for visual proof cards)
+    top_proof_records = sorted(
+        scoped_records,
+        key=lambda r: (r["confidence_pct"], r["_dt"] or datetime.min),
+        reverse=True,
+    )[:6]
+    prediction_proofs = []
+    for r in top_proof_records:
+        bbox = r.get("bbox") or {}
+        w_px = max(0, int(bbox.get("x2", 0)) - int(bbox.get("x1", 0)))
+        h_px = max(0, int(bbox.get("y2", 0)) - int(bbox.get("y1", 0)))
+        prediction_proofs.append({
+            "event_id": r["event_id"],
+            "track_id": r["track_id"],
+            "defect_name": r["category"],
+            "raw_defect_type": r["raw_defect_type"],
+            "confidence_pct": r["confidence_pct"],
+            "severity": r["severity"],
+            "timestamp_display": r["timestamp_display"],
+            "bbox": bbox,
+            "bbox_coords": f"x1:{bbox.get('x1', 0)}, y1:{bbox.get('y1', 0)} → x2:{bbox.get('x2', 0)}, y2:{bbox.get('y2', 0)} ({w_px}×{h_px} px)",
+            "original_image": r.get("original_image"),
+            "annotated_image": r.get("annotated_image"),
+        })
 
     captured_evidence = []
     for r in scoped_records:
@@ -754,6 +797,7 @@ def build_report_data(
             "rows": defect_summary_rows,
             "most_frequent_defect": most_frequent_defect,
         },
+        "prediction_proofs": prediction_proofs,
         "visual_evidence": {
             "captured_images": captured_evidence[:8],
             "has_captured_images": len(captured_evidence) > 0,
@@ -1044,12 +1088,45 @@ def generate_report_pdf_bytes(report: Dict[str, Any]) -> bytes:
 
     story = []
     s = report["summary"]
+    td = report["technical_details"]
 
-    story.append(Paragraph(report["title"], title_style))
-    story.append(Paragraph(report["subtitle"], subtitle_style))
+    story.append(Paragraph("Weave Kiran – AI System Inspection & Prediction Report", title_style))
+    story.append(Paragraph("How the System Works • Final Inspection Output • Verified AI Defect Prediction Proofs", subtitle_style))
 
-    # ---------- SECTION 1: INSPECTION SUMMARY ----------
-    story.append(Paragraph("Section 1 – Inspection Summary", sec_heading))
+    # ---------- SECTION 1: HOW THE WEAVE KIRAN SYSTEM WORKS ----------
+    story.append(Paragraph("1. How the Weave Kiran System Works (End-to-End Pipeline)", sec_heading))
+    workflow_rows = [
+        [
+            Paragraph("<b>Step 1: Live Frame Capture</b>", th_style),
+            Paragraph("<b>Step 2: YOLO AI Prediction</b>", th_style),
+            Paragraph("<b>Step 3: Object Tracking</b>", th_style),
+            Paragraph("<b>Step 4: Cloud & Hardware Output</b>", th_style),
+        ],
+        [
+            Paragraph("Captures live fabric video frames from the browser/loom camera and resizes each frame to a <b>640×640 px</b> tensor.", cell_style),
+            Paragraph("Custom-trained <b>YOLO26s (best.pt)</b> predicts defect class, confidence score (>= 35%), and pixel bounding box <b>(x1, y1, x2, y2)</b>.", cell_style),
+            Paragraph("IoU (0.30) + centroid matcher with 20-frame majority vote assigns a unique <b>Event ID</b> so moving defects are counted once.", cell_style),
+            Paragraph("Logs every verified prediction to <b>MongoDB Atlas</b>, syncs with owner Arduino motor control, and computes the final grade.", cell_style),
+        ],
+    ]
+    wf_table = Table(workflow_rows, colWidths=[45 * mm, 45 * mm, 45 * mm, 45 * mm])
+    wf_table.setStyle(
+        TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F1F5F9")),
+            ("BACKGROUND", (0, 1), (-1, 1), colors.white),
+            ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#CBD5E1")),
+            ("INNERGRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#E2E8F0")),
+            ("TOPPADDING", (0, 0), (-1, -1), 4.5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4.5),
+            ("LEFTPADDING", (0, 0), (-1, -1), 5),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ])
+    )
+    story.append(wf_table)
+
+    # ---------- SECTION 2: FINAL SYSTEM OUTPUT ----------
+    story.append(Paragraph("2. Final System Output & Inspection Verdict", sec_heading))
 
     verdict_bg = (
         colors.HexColor("#DCFCE7")
@@ -1062,21 +1139,25 @@ def generate_report_pdf_bytes(report: Dict[str, Any]) -> bytes:
         else (colors.HexColor("#D97706") if s["verdict_level"] == "CONDITIONAL" else colors.HexColor("#DC2626"))
     )
 
+    mf = report["defect_breakdown"]["most_frequent_defect"]
     kpi_data = [
         [
-            Paragraph("<b>TOTAL FABRIC INSPECTED</b>", ParagraphStyle("k1", parent=cell_bold, fontSize=7, textColor=colors.HexColor("#64748B"))),
-            Paragraph("<b>TOTAL DEFECTS DETECTED</b>", ParagraphStyle("k2", parent=cell_bold, fontSize=7, textColor=colors.HexColor("#64748B"))),
-            Paragraph("<b>DEFECT-FREE FABRIC %</b>", ParagraphStyle("k3", parent=cell_bold, fontSize=7, textColor=colors.HexColor("#64748B"))),
-            Paragraph("<b>FINAL QUALITY GRADE</b>", ParagraphStyle("k4", parent=cell_bold, fontSize=7, textColor=colors.HexColor("#64748B"))),
+            Paragraph("<b>TOTAL AI PREDICTIONS</b>", ParagraphStyle("k1", parent=cell_bold, fontSize=7, textColor=colors.HexColor("#64748B"))),
+            Paragraph("<b>AI MODEL CONFIDENCE</b>", ParagraphStyle("k2", parent=cell_bold, fontSize=7, textColor=colors.HexColor("#64748B"))),
+            Paragraph("<b>TOP PREDICTED CLASS</b>", ParagraphStyle("k3", parent=cell_bold, fontSize=7, textColor=colors.HexColor("#64748B"))),
+            Paragraph("<b>FINAL OUTPUT GRADE</b>", ParagraphStyle("k4", parent=cell_bold, fontSize=7, textColor=colors.HexColor("#64748B"))),
         ],
         [
-            Paragraph(f"<b>{s['total_fabric_inspected_display']}</b>", ParagraphStyle("kv1", parent=body_bold, fontSize=10.5, leading=13)),
             Paragraph(
-                f"<b>{s['total_defects']}</b> <font size=7.2 color='#64748B'>({s['high_defects']} High, {s['medium_defects']} Med, {s['low_defects']} Low)</font>",
-                ParagraphStyle("kv2", parent=body_bold, fontSize=10.5, leading=13, textColor=colors.HexColor("#DC2626")),
+                f"<b>{s['total_defects']} Defects</b> <font size=7.2 color='#64748B'>({s['high_defects']} High, {s['medium_defects']} Med, {s['low_defects']} Low)</font>",
+                ParagraphStyle("kv1", parent=body_bold, fontSize=10, leading=13, textColor=colors.HexColor("#DC2626")),
             ),
             Paragraph(
-                f"<b>{s['defect_free_display']}</b>",
+                f"<b>Peak {td['peak_confidence_pct']}%</b> <font size=7.5 color='#64748B'>(Avg {td['mean_confidence_pct']}%)</font>",
+                ParagraphStyle("kv2", parent=body_bold, fontSize=10.5, leading=13),
+            ),
+            Paragraph(
+                f"<b>{mf['defect_name'] if mf else 'None'}</b> <font size=7.5 color='#64748B'>({mf['count'] if mf else 0} found)</font>",
                 ParagraphStyle("kv3", parent=body_bold, fontSize=10, leading=13, textColor=colors.HexColor("#15803D")),
             ),
             Paragraph(
@@ -1101,54 +1182,13 @@ def generate_report_pdf_bytes(report: Dict[str, Any]) -> bytes:
     story.append(kpi_table)
     story.append(Spacer(1, 5))
 
-    meta_data = [
-        [
-            Paragraph("<b>Report ID:</b>", cell_bold),
-            Paragraph(s["report_id"], cell_style),
-            Paragraph("<b>Loom ID:</b>", cell_bold),
-            Paragraph(s["loom_id"], cell_style),
-            Paragraph("<b>Roll ID:</b>", cell_bold),
-            Paragraph(s["roll_id"], cell_style),
-        ],
-        [
-            Paragraph("<b>Inspection Window:</b>", cell_bold),
-            Paragraph(f"{s['inspection_start_display']} to {s['inspection_end_display']}", cell_style),
-            Paragraph("<b>Active Duration:</b>", cell_bold),
-            Paragraph(s["inspection_duration_display"], cell_style),
-            Paragraph("<b>Final Status:</b>", cell_bold),
-            Paragraph(f"<b>{s['final_status']}</b>", cell_bold),
-        ],
-        [
-            Paragraph("<b>Report Generated:</b>", cell_bold),
-            Paragraph(s["report_generated_display"], cell_style),
-            Paragraph("<b>Report Scope:</b>", cell_bold),
-            Paragraph(report["scope_label"], cell_style),
-            Paragraph("<b>Length Basis:</b>", cell_bold),
-            Paragraph(s["length_source"], cell_style),
-        ],
-    ]
-    meta_table = Table(meta_data, colWidths=[27 * mm, 43 * mm, 25 * mm, 33 * mm, 22 * mm, 30 * mm])
-    meta_table.setStyle(
-        TableStyle([
-            ("BACKGROUND", (0, 0), (-1, -1), colors.white),
-            ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#CBD5E1")),
-            ("INNERGRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#E2E8F0")),
-            ("TOPPADDING", (0, 0), (-1, -1), 4),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-            ("LEFTPADDING", (0, 0), (-1, -1), 5),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ])
-    )
-    story.append(meta_table)
-    story.append(Spacer(1, 5))
-
     exec_box = Table(
         [
             [
                 Paragraph(
-                    f"<b>Executive Summary (Simple Explanation):</b> {s['plain_english_summary']}<br/>"
-                    f"<font size=7.8 color='#475569'><b>Grade & Defect-Free % Methodology:</b> {s['grade_explanation']} {s['defect_free_note']}</font>",
+                    f"<b>Final System Output: {s['quality_grade']} — {s['final_status']}</b> (Report ID: {s['report_id']} • Loom: {s['loom_id']} • Duration: {s['inspection_duration_display']})<br/>"
+                    f"Our custom YOLO26s (<b>best.pt</b>) model analyzed the live fabric stream and logged <b>{s['total_defects']} verified defect predictions</b> "
+                    f"with a peak confidence of <b>{td['peak_confidence_pct']}%</b> (average <b>{td['mean_confidence_pct']}%</b>).",
                     body_style,
                 )
             ]
@@ -1167,49 +1207,38 @@ def generate_report_pdf_bytes(report: Dict[str, Any]) -> bytes:
     )
     story.append(exec_box)
 
-    # ---------- SECTION 2: UNDERSTAND THE DEFECTS ----------
-    story.append(Paragraph("Section 2 – Understand the Defects", sec_heading))
-
-    mf = report["defect_breakdown"]["most_frequent_defect"]
-    if mf:
-        story.append(
-            Paragraph(
-                f"<b>Most Frequently Detected Defect:</b> <font color='#DC2626'><b>{mf['defect_name']}</b></font> "
-                f"— {mf['count']} occurrences ({mf['share_pct']}% of all detected defects). "
-                f"<i>Recommended Action: {mf['factory_action']}</i>",
-                body_style,
-            )
-        )
-        story.append(Spacer(1, 4))
-
+    # ---------- SECTION 3: AI PREDICTION SUMMARY & CLASS PROOF TABLE ----------
+    story.append(Paragraph("3. AI Prediction Summary & Class Proof Table", sec_heading))
     story.append(_build_defect_chart_drawing(report["defect_breakdown"]["rows"], s["total_defects"]))
     story.append(Spacer(1, 5))
 
     defect_table_rows = [
         [
-            Paragraph("<b>Defect Name</b>", th_style),
-            Paragraph("<b>Number of Defects</b>", th_style),
-            Paragraph("<b>Severity</b>", th_style),
-            Paragraph("<b>What Does It Mean?</b>", th_style),
-            Paragraph("<b>Why Does It Matter?</b>", th_style),
-            Paragraph("<b>What Should the Factory Do?</b>", th_style),
+            Paragraph("<b>Predicted Defect Class</b>", th_style),
+            Paragraph("<b>AI Predictions</b>", th_style),
+            Paragraph("<b>AI Confidence (Avg / Peak)</b>", th_style),
+            Paragraph("<b>Severity Breakdown</b>", th_style),
+            Paragraph("<b>Sample Verified Prediction Proof (Event ID, BBox & Time)</b>", th_style),
         ]
     ]
     for r in report["defect_breakdown"]["rows"]:
         is_top = mf and r["defect_name"] == mf["defect_name"] and r["count"] > 0
-        name_label = f"<b>{r['defect_name']}</b> {'(Most Frequent)' if is_top else ''}"
+        name_label = f"<b>{r['defect_name']}</b> {'(Top Class)' if is_top else ''}"
+        conf_label = (
+            f"Avg: <b>{r['avg_confidence_pct']}%</b> | Peak: <b>{r['peak_confidence_pct']}%</b>"
+            if r["count"] > 0 else "—"
+        )
         defect_table_rows.append([
             Paragraph(name_label, cell_bold if is_top else cell_style),
             Paragraph(f"<b>{r['count']}</b> ({r['share_pct']}%)", cell_bold),
+            Paragraph(conf_label, cell_style),
             Paragraph(r["severity"], cell_style),
-            Paragraph(r["what_it_means"], cell_style),
-            Paragraph(r["why_it_matters"], cell_style),
-            Paragraph(r["factory_action"], cell_style),
+            Paragraph(r["sample_proof"], cell_style),
         ])
 
     defect_table = Table(
         defect_table_rows,
-        colWidths=[24 * mm, 19 * mm, 24 * mm, 36 * mm, 37 * mm, 40 * mm],
+        colWidths=[32 * mm, 23 * mm, 35 * mm, 30 * mm, 60 * mm],
         repeatRows=1,
     )
     defect_table.setStyle(
@@ -1226,260 +1255,47 @@ def generate_report_pdf_bytes(report: Dict[str, Any]) -> bytes:
     )
     story.append(defect_table)
 
-    # ---------- SECTION 3: VISUAL INSPECTION EVIDENCE ----------
-    story.append(Paragraph("Section 3 – Visual Inspection Evidence", sec_heading))
-    ve = report["visual_evidence"]
-
-    if ve["has_captured_images"]:
-        story.append(Paragraph(ve["notice"], body_style))
-        story.append(Spacer(1, 4))
-        ev_rows = [
-            [
-                Paragraph("<b>Defect & Event ID</b>", th_style),
-                Paragraph("<b>Original Fabric Camera Image</b>", th_style),
-                Paragraph("<b>AI-Detected Defect Image (Bounding Box)</b>", th_style),
-                Paragraph("<b>Confidence & Meter Position</b>", th_style),
-            ]
-        ]
-        for item in ve["captured_images"][:6]:
-            orig_img = _decode_data_url_to_rl_image(item.get("original_image") or "", 46 * mm, 34 * mm)
-            ann_img = _decode_data_url_to_rl_image(item.get("annotated_image") or "", 46 * mm, 34 * mm)
-            bbox = item.get("bbox") or {}
-            ev_rows.append([
-                Paragraph(
-                    f"<b>{item['defect_name']}</b><br/>ID: {item['event_id']}<br/>Severity: {item['severity']}<br/>{item['timestamp_display']}",
-                    cell_style,
-                ),
-                orig_img if orig_img else Paragraph("Original frame not archived", cell_style),
-                ann_img if ann_img else Paragraph("Annotated frame not archived", cell_style),
-                Paragraph(
-                    f"<b>Confidence:</b> {item['confidence_pct']}%<br/>"
-                    f"<b>Position:</b> {item['meter_position']}<br/>"
-                    f"<b>Box:</b> ({bbox.get('x1', 0)},{bbox.get('y1', 0)})–({bbox.get('x2', 0)},{bbox.get('y2', 0)})",
-                    cell_style,
-                ),
-            ])
-        ev_table = Table(ev_rows, colWidths=[38 * mm, 50 * mm, 50 * mm, 42 * mm], repeatRows=1)
-        ev_table.setStyle(
-            TableStyle([
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F1F5F9")),
-                ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#CBD5E1")),
-                ("INNERGRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#E2E8F0")),
-                ("TOPPADDING", (0, 0), (-1, -1), 4),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ])
-        )
-        story.append(ev_table)
-    else:
-        notice_box = Table(
-            [[Paragraph(f"<b>Visual Evidence Policy Notice:</b> {ve['notice']}", body_style)]],
-            colWidths=[180 * mm],
-        )
-        notice_box.setStyle(
-            TableStyle([
-                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#FFF7ED")),
-                ("BOX", (0, 0), (-1, -1), 0.75, colors.HexColor("#F97316")),
-                ("TOPPADDING", (0, 0), (-1, -1), 6),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-                ("LEFTPADDING", (0, 0), (-1, -1), 8),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
-            ])
-        )
-        story.append(notice_box)
-
-    # ---------- SECTION 4: FABRIC QUALITY DECISION ----------
-    story.append(Paragraph("Section 4 – Fabric Quality Decision", sec_heading))
-    story.append(Paragraph(report["quality_decision"]["policy_note"], body_style))
-    story.append(Spacer(1, 4))
-
-    qd_rows = [
+    # ---------- SECTION 4: TOP VERIFIED AI PREDICTION PROOFS ----------
+    story.append(Paragraph("4. Top Verified AI Defect Prediction Proofs (High-Confidence Detections)", sec_heading))
+    proof_rows = [
         [
-            Paragraph("<b>Category</b>", th_style),
-            Paragraph("<b>Fabric Quantity</b>", th_style),
-            Paragraph("<b>Calculation Basis</b>", th_style),
-            Paragraph("<b>What This Decision Means</b>", th_style),
+            Paragraph("<b>Unique Event ID</b>", th_style),
+            Paragraph("<b>Track ID</b>", th_style),
+            Paragraph("<b>Predicted Class</b>", th_style),
+            Paragraph("<b>AI Confidence</b>", th_style),
+            Paragraph("<b>Severity</b>", th_style),
+            Paragraph("<b>Predicted Bounding Box (px)</b>", th_style),
+            Paragraph("<b>Timestamp</b>", th_style),
         ]
     ]
-    for q in report["quality_decision"]["rows"]:
-        qd_rows.append([
-            Paragraph(f"<b>{q['category']}</b>", cell_bold),
-            Paragraph(f"<b>{q['quantity']}</b>", cell_bold),
-            Paragraph(q["basis"], cell_style),
-            Paragraph(q["meaning"], cell_style),
+    for p in (report.get("prediction_proofs") or [])[:6]:
+        proof_rows.append([
+            Paragraph(p["event_id"], cell_bold),
+            Paragraph(f"#{p['track_id']}", cell_style),
+            Paragraph(f"<b>{p['defect_name']}</b>", cell_bold),
+            Paragraph(f"<b>{p['confidence_pct']}%</b>", cell_bold),
+            Paragraph(p["severity"], cell_bold),
+            Paragraph(p["bbox_coords"], cell_style),
+            Paragraph(p["timestamp_display"], cell_style),
         ])
-
-    qd_table = Table(qd_rows, colWidths=[36 * mm, 46 * mm, 38 * mm, 60 * mm], repeatRows=1)
-    qd_table.setStyle(
-        TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F1F5F9")),
-            ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#CBD5E1")),
-            ("INNERGRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#E2E8F0")),
-            ("TOPPADDING", (0, 0), (-1, -1), 4.5),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 4.5),
-            ("LEFTPADDING", (0, 0), (-1, -1), 5),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ])
+    proof_table = Table(
+        proof_rows,
+        colWidths=[32 * mm, 14 * mm, 26 * mm, 19 * mm, 16 * mm, 43 * mm, 30 * mm],
+        repeatRows=1,
     )
-    story.append(qd_table)
-    story.append(Spacer(1, 5))
-
-    maj_locs = report["quality_decision"]["major_defect_locations"]
-    story.append(
-        Paragraph(
-            f"<b>Locations of All Major (High-Severity >= 80% Confidence) Defects ({len(maj_locs)} found):</b>",
-            body_bold,
-        )
-    )
-    story.append(Spacer(1, 3))
-    if maj_locs:
-        maj_rows = [
-            [
-                Paragraph("<b>Event ID</b>", th_style),
-                Paragraph("<b>Defect Name</b>", th_style),
-                Paragraph("<b>Confidence</b>", th_style),
-                Paragraph("<b>Detection Time</b>", th_style),
-                Paragraph("<b>Meter Position</b>", th_style),
-                Paragraph("<b>Camera Pixel Bounding Box</b>", th_style),
-            ]
-        ]
-        for m in maj_locs:
-            maj_rows.append([
-                Paragraph(m["event_id"], cell_style),
-                Paragraph(f"<b>{m['defect_name']}</b>", cell_bold),
-                Paragraph(f"{m['confidence_pct']}%", cell_bold),
-                Paragraph(m["timestamp_display"], cell_style),
-                Paragraph(m["meter_position"], cell_style),
-                Paragraph(m["bbox_display"], cell_style),
-            ])
-        maj_table = Table(maj_rows, colWidths=[35 * mm, 24 * mm, 21 * mm, 33 * mm, 26 * mm, 41 * mm], repeatRows=1)
-        maj_table.setStyle(
-            TableStyle([
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#FEF2F2")),
-                ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#FECACA")),
-                ("INNERGRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#FEE2E2")),
-                ("TOPPADDING", (0, 0), (-1, -1), 3.5),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 3.5),
-                ("LEFTPADDING", (0, 0), (-1, -1), 4),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-            ])
-        )
-        story.append(maj_table)
-    else:
-        story.append(Paragraph("No High-severity (>= 80% confidence) major defects were detected in this scope.", cell_style))
-
-    # ---------- SECTION 5: BUSINESS IMPACT ----------
-    story.append(Paragraph("Section 5 – Business Impact", sec_heading))
-    bi_rows = [
-        [
-            Paragraph("<b>Business Metric</b>", th_style),
-            Paragraph("<b>Result / Value</b>", th_style),
-            Paragraph("<b>Data Classification</b>", th_style),
-            Paragraph("<b>Explanation & Basis</b>", th_style),
-        ]
-    ]
-    for b in report["business_impact"]["rows"]:
-        bi_rows.append([
-            Paragraph(f"<b>{b['metric']}</b>", cell_bold),
-            Paragraph(f"<b>{b['value']}</b>", cell_bold),
-            Paragraph(b["classification"], cell_style),
-            Paragraph(b["notes"], cell_style),
-        ])
-    bi_table = Table(bi_rows, colWidths=[38 * mm, 48 * mm, 36 * mm, 58 * mm], repeatRows=1)
-    bi_table.setStyle(
+    proof_table.setStyle(
         TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F1F5F9")),
-            ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#CBD5E1")),
-            ("INNERGRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#E2E8F0")),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#FEF2F2")),
+            ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#FECACA")),
+            ("INNERGRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#FEE2E2")),
             ("TOPPADDING", (0, 0), (-1, -1), 4),
             ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-            ("LEFTPADDING", (0, 0), (-1, -1), 5),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ])
     )
-    story.append(bi_table)
-
-    # ---------- SECTION 6: RECOMMENDED FACTORY ACTIONS ----------
-    story.append(Paragraph("Section 6 – Recommended Factory Actions", sec_heading))
-    rec_rows = [
-        [
-            Paragraph("<b>Step</b>", th_style),
-            Paragraph("<b>Priority</b>", th_style),
-            Paragraph("<b>Recommended Action</b>", th_style),
-            Paragraph("<b>How to Execute on the Factory Floor</b>", th_style),
-        ]
-    ]
-    for i, rec in enumerate(report["recommendations"], start=1):
-        rec_rows.append([
-            Paragraph(f"<b>#{i}</b>", cell_bold),
-            Paragraph(f"<b>{rec['priority']}</b>", cell_bold),
-            Paragraph(f"<b>{rec['title']}</b>", cell_bold),
-            Paragraph(rec["detail"], cell_style),
-        ])
-    rec_table = Table(rec_rows, colWidths=[12 * mm, 28 * mm, 55 * mm, 85 * mm], repeatRows=1)
-    rec_table.setStyle(
-        TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F1F5F9")),
-            ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#CBD5E1")),
-            ("INNERGRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#E2E8F0")),
-            ("TOPPADDING", (0, 0), (-1, -1), 4),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-            ("LEFTPADDING", (0, 0), (-1, -1), 5),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ])
-    )
-    story.append(rec_table)
-    story.append(Spacer(1, 6))
-
-    # QA VERIFICATION & SIGN-OFF BLOCK (Point 12)
-    qav = report["qa_verification"]
-    qa_table = Table(
-        [
-            [
-                Paragraph("<b>QA Verification & Final Inspection Approval</b>", th_style),
-                Paragraph("<b>Inspector Sign-Off</b>", th_style),
-                Paragraph("<b>Production / Dispatch Approval</b>", th_style),
-            ],
-            [
-                Paragraph(
-                    f"<b>Approval Status:</b> {qav['approval_status']}<br/>"
-                    f"<b>Quality Grade:</b> {qav['quality_grade']}<br/>"
-                    f"<b>System Audit:</b> {qav['system_verification']}<br/>"
-                    f"<b>Verified At:</b> {qav['verification_timestamp']}",
-                    cell_style,
-                ),
-                Paragraph(
-                    f"<b>Role:</b> {qav['inspector_role']}<br/><br/>"
-                    "<b>Signature:</b> _______________________<br/>"
-                    "<b>Date / Shift:</b> _____________________",
-                    cell_style,
-                ),
-                Paragraph(
-                    f"<b>Role:</b> {qav['manager_role']}<br/><br/>"
-                    "<b>Signature:</b> _______________________<br/>"
-                    "<b>Dispatch Stamp:</b> _________________",
-                    cell_style,
-                ),
-            ],
-        ],
-        colWidths=[68 * mm, 56 * mm, 56 * mm],
-    )
-    qa_table.setStyle(
-        TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F1F5F9")),
-            ("BOX", (0, 0), (-1, -1), 0.75, colors.HexColor("#94A3B8")),
-            ("INNERGRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#CBD5E1")),
-            ("TOPPADDING", (0, 0), (-1, -1), 5),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-            ("LEFTPADDING", (0, 0), (-1, -1), 6),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ])
-    )
-    story.append(qa_table)
+    story.append(proof_table)
 
     # ---------- SECTION 7: TECHNICAL DETAILS (AT THE END) ----------
     story.append(Paragraph("Section 7 – Technical Summary & Recent Defect Log", sec_heading))

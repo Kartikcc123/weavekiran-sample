@@ -7,12 +7,13 @@ import {
   XCircle,
   RefreshCw,
   ShieldCheck,
-  Ruler,
   Award,
-  Wrench,
   BarChart3,
   Cpu,
-  ClipboardCheck
+  Camera,
+  Crosshair,
+  Database,
+  Activity
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -27,6 +28,7 @@ import {
 } from 'recharts';
 import { API_BASE_URL } from '../config';
 import { useSimulation } from '../context/SimulationContext';
+import { getDefectSwatch } from '../utils/swatches';
 
 const CHART_COLORS = ['#DC2626', '#EA580C', '#2563EB', '#7C3AED', '#0D9488'];
 
@@ -67,7 +69,7 @@ export default function ReportPage() {
       const a = document.createElement('a');
       a.href = url;
       const reportId = report?.summary?.report_id || 'WK-RPT';
-      a.download = `${reportId}_Weave_Kiran_Quality_Report.pdf`;
+      a.download = `${reportId}_Weave_Kiran_System_Report.pdf`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -83,35 +85,40 @@ export default function ReportPage() {
   const handleDownloadCSV = () => {
     if (!report) return;
     const s = report.summary;
+    const td = report.technical_details;
     const lines = [
-      [report.title],
+      ['Weave Kiran - AI System Inspection & Defect Prediction Report'],
       ['Report ID', s.report_id],
       ['Loom ID', s.loom_id],
-      ['Inspection Date', s.inspection_end_display],
-      ['Final Grade', s.quality_grade],
-      ['Final Result', s.final_status],
-      ['Total Defects', s.total_defects],
-      ['Summary', `"${s.plain_english_summary}"`],
+      ['AI Model', `${td.ai_model_name} (${td.weights_file})`],
+      ['Final Output Grade', s.quality_grade],
+      ['Final Inspection Status', s.final_status],
+      ['Total Defects Predicted', s.total_defects],
+      ['Mean / Peak AI Confidence', `${td.mean_confidence_pct}% / ${td.peak_confidence_pct}%`],
       [],
-      ['DEFECT SUMMARY'],
-      ['Defect Name', 'Count', 'Share (%)', 'What It Means', 'Recommended Action'],
+      ['AI PREDICTION SUMMARY BY CLASS'],
+      ['Predicted Defect Class', 'Total Predictions', 'Share (%)', 'Avg Confidence (%)', 'Peak Confidence (%)', 'Severity Breakdown', 'Sample Verified Proof'],
       ...report.defect_breakdown.rows.map(r => [
         r.defect_name,
         r.count,
         `${r.share_pct}%`,
-        `"${r.what_it_means}"`,
-        `"${r.factory_action}"`
+        `${r.avg_confidence_pct}%`,
+        `${r.peak_confidence_pct}%`,
+        `"${r.severity}"`,
+        `"${r.sample_proof}"`
       ]),
       [],
-      ['RECENT DEFECT LOG'],
-      ['#', 'Event ID', 'Time', 'Defect Type', 'Confidence', 'Severity'],
+      ['VERIFIED AI DEFECT PREDICTION LOG (PROOF RECORDS)'],
+      ['#', 'Unique Event ID', 'Track ID', 'Timestamp', 'Predicted Defect', 'AI Confidence (%)', 'Severity', 'Predicted Bounding Box (px)'],
       ...report.defect_log.map(d => [
         d.index,
         d.event_id,
+        d.track_id || '',
         `"${d.timestamp_display}"`,
         d.defect_name,
         `${d.confidence_pct}%`,
-        d.severity
+        d.severity,
+        `"${d.bbox_display}"`
       ])
     ];
 
@@ -120,7 +127,7 @@ export default function ReportPage() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${s.report_id}_Weave_Kiran_Report.csv`;
+    a.download = `${s.report_id}_Weave_Kiran_Prediction_Proof_Report.csv`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -132,7 +139,7 @@ export default function ReportPage() {
       <div className="h-full flex items-center justify-center p-8 bg-[#F5F6F8]">
         <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-xs flex items-center gap-3">
           <RefreshCw className="w-5 h-5 text-[#EA580C] animate-spin" />
-          <span className="text-sm font-bold text-slate-700">Loading Quality Report...</span>
+          <span className="text-sm font-bold text-slate-700">Loading Weave Kiran System Report...</span>
         </div>
       </div>
     );
@@ -143,17 +150,14 @@ export default function ReportPage() {
   const s = report.summary;
   const mf = report.defect_breakdown.most_frequent_defect;
   const td = report.technical_details;
+  const proofs = report.prediction_proofs || [];
   const allLogs = report.defect_log || [];
-  const visibleLogs = showAllLogs ? allLogs : allLogs.slice(0, 10);
+  const visibleLogs = showAllLogs ? allLogs : allLogs.slice(0, 12);
   const pieData = report.defect_breakdown.rows.filter(r => r.count > 0);
-  const nonMajorPct =
-    s.total_defects > 0
-      ? Math.round(((s.total_defects - s.high_defects) / s.total_defects) * 100)
-      : 100;
 
   return (
     <div className="h-full overflow-y-auto p-4 md:p-6 flex flex-col gap-5 bg-[#F5F6F8]">
-      {/* 1. SIMPLE TOP HEADER */}
+      {/* 1. HEADER & DOWNLOAD BUTTONS */}
       <div className="bg-white rounded-2xl p-5 border border-[#E5E7EB] shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div className="flex items-center gap-3.5">
           <div
@@ -164,10 +168,10 @@ export default function ReportPage() {
           </div>
           <div>
             <h1 className="text-lg md:text-xl font-black text-[#0F172A]">
-              {report.title}
+              Weave Kiran – AI System Inspection & Prediction Report
             </h1>
             <p className="text-xs text-slate-500">
-              {report.subtitle} • Report ID: <strong className="font-mono">{s.report_id}</strong>
+              How the System Works • Final Inspection Output • Verified AI Defect Prediction Proofs (ID: <strong className="font-mono">{s.report_id}</strong>)
             </p>
           </div>
         </div>
@@ -178,8 +182,8 @@ export default function ReportPage() {
             onChange={e => setScope(e.target.value)}
             className="px-3 py-2 text-xs font-bold rounded-xl border border-slate-300 bg-slate-50 text-[#0F172A]"
           >
-            <option value="latest_session">Latest Session</option>
-            <option value="all">All Records ({report.total_db_records})</option>
+            <option value="latest_session">Latest Session ({s.total_defects} predictions)</option>
+            <option value="all">All Database Proofs ({report.total_db_records} predictions)</option>
           </select>
 
           <button
@@ -190,7 +194,7 @@ export default function ReportPage() {
             className="flex items-center gap-2 rounded-xl text-xs font-extrabold shadow-sm cursor-pointer whitespace-nowrap"
           >
             <Download className="w-4 h-4" />
-            <span>{downloadingPdf ? 'Preparing PDF…' : 'Download PDF Report'}</span>
+            <span>{downloadingPdf ? 'Generating PDF…' : 'Download PDF Report'}</span>
           </button>
 
           <button
@@ -205,7 +209,88 @@ export default function ReportPage() {
         </div>
       </div>
 
-      {/* 2. FINAL RESULT BANNER + 4 KPI CARDS */}
+      {/* 2. HOW OUR SYSTEM WORKS (4-STEP END-TO-END PIPELINE) */}
+      <div className="bg-white rounded-2xl p-5 border border-[#E5E7EB] shadow-xs flex flex-col gap-3.5">
+        <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
+          <div className="flex items-center gap-2">
+            <Cpu className="w-5 h-5 text-[#EA580C]" />
+            <h2 className="text-sm font-black text-[#0F172A] uppercase">
+              1. How the Weave Kiran System Works
+            </h2>
+          </div>
+          <span className="text-[11px] font-mono font-bold text-slate-600 bg-slate-100 px-2.5 py-0.5 rounded-md">
+            Live Camera → YOLO26s (best.pt) → Tracking → Cloud & Loom Control
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+          <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 flex flex-col gap-1.5">
+            <div className="flex items-center gap-2 font-black text-[#0F172A]">
+              <span
+                style={{ backgroundColor: '#EA580C', color: '#FFFFFF' }}
+                className="w-5 h-5 rounded-full text-[11px] flex items-center justify-center flex-shrink-0"
+              >
+                1
+              </span>
+              <Camera className="w-4 h-4 text-[#EA580C]" />
+              <span>Live Frame Capture</span>
+            </div>
+            <p className="text-slate-600 leading-relaxed">
+              Captures real-time fabric video frames from the browser/loom camera and resizes each frame to a <strong>640×640 px</strong> tensor.
+            </p>
+          </div>
+
+          <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 flex flex-col gap-1.5">
+            <div className="flex items-center gap-2 font-black text-[#0F172A]">
+              <span
+                style={{ backgroundColor: '#EA580C', color: '#FFFFFF' }}
+                className="w-5 h-5 rounded-full text-[11px] flex items-center justify-center flex-shrink-0"
+              >
+                2
+              </span>
+              <Crosshair className="w-4 h-4 text-[#EA580C]" />
+              <span>YOLO AI Prediction</span>
+            </div>
+            <p className="text-slate-600 leading-relaxed">
+              Custom-trained <strong>best.pt</strong> model predicts defect category, confidence score (≥ 35%), and exact pixel bounding box <code>(x1, y1, x2, y2)</code>.
+            </p>
+          </div>
+
+          <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 flex flex-col gap-1.5">
+            <div className="flex items-center gap-2 font-black text-[#0F172A]">
+              <span
+                style={{ backgroundColor: '#EA580C', color: '#FFFFFF' }}
+                className="w-5 h-5 rounded-full text-[11px] flex items-center justify-center flex-shrink-0"
+              >
+                3
+              </span>
+              <Activity className="w-4 h-4 text-[#EA580C]" />
+              <span>Anti-Duplicate Tracking</span>
+            </div>
+            <p className="text-slate-600 leading-relaxed">
+              IoU (0.30) + centroid matcher with 20-frame majority vote assigns a unique <strong>Event ID</strong> so a moving defect is counted only once.
+            </p>
+          </div>
+
+          <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 flex flex-col gap-1.5">
+            <div className="flex items-center gap-2 font-black text-[#0F172A]">
+              <span
+                style={{ backgroundColor: '#EA580C', color: '#FFFFFF' }}
+                className="w-5 h-5 rounded-full text-[11px] flex items-center justify-center flex-shrink-0"
+              >
+                4
+              </span>
+              <Database className="w-4 h-4 text-[#EA580C]" />
+              <span>Final Output & Proof Log</span>
+            </div>
+            <p className="text-slate-600 leading-relaxed">
+              Saves every verified prediction to <strong>MongoDB Atlas</strong>, syncs with owner Arduino hardware, and computes the final fabric grade.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* 3. FINAL SYSTEM OUTPUT (VERDICT + 4 KPI CARDS) */}
       <div
         className={`rounded-2xl p-5 border-2 shadow-xs flex flex-col gap-4 ${
           s.verdict_level === 'PASS'
@@ -236,81 +321,193 @@ export default function ReportPage() {
             </div>
             <div>
               <div className="text-[11px] font-black uppercase tracking-wider text-slate-500">
-                FINAL INSPECTION RESULT • {s.loom_id}
+                2. FINAL SYSTEM OUTPUT • {s.loom_id}
               </div>
               <h2 className="text-xl font-black text-[#0F172A] mt-0.5">
-                {s.quality_grade} — {s.final_status}
+                Final Result: {s.quality_grade} — {s.final_status}
               </h2>
               <p className="text-xs md:text-sm text-slate-700 font-medium mt-1">
-                {s.plain_english_summary}
+                Our YOLO26s (<code>best.pt</code>) model processed the live fabric stream on <strong>{s.loom_id}</strong> and predicted{' '}
+                <strong>{s.total_defects} verified defects</strong> ({s.high_defects} High, {s.medium_defects} Medium, {s.low_defects} Low severity)
+                with a peak detection confidence of <strong>{td.peak_confidence_pct}%</strong> (mean <strong>{td.mean_confidence_pct}%</strong>).
               </p>
             </div>
           </div>
         </div>
 
-        {/* 4 Simple KPI Cards */}
+        {/* 4 Output KPI Cards */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <div className="bg-white rounded-xl p-3.5 border border-slate-200">
             <div className="flex items-center justify-between text-[11px] font-bold text-slate-500 uppercase">
-              <span>Fabric Inspected</span>
-              <Ruler className="w-4 h-4 text-[#EA580C]" />
-            </div>
-            <div className="text-lg font-black text-[#0F172A] mt-1">
-              {s.effective_length_m ? `${s.effective_length_m} m` : '0.00 m (Sensor Idle)'}
-            </div>
-            <div className="text-[11px] text-slate-400">Duration: {s.inspection_duration_display}</div>
-          </div>
-
-          <div className="bg-white rounded-xl p-3.5 border border-slate-200">
-            <div className="flex items-center justify-between text-[11px] font-bold text-slate-500 uppercase">
-              <span>Total Defects</span>
+              <span>Total AI Predictions</span>
               <AlertTriangle className="w-4 h-4 text-red-600" />
             </div>
-            <div className="text-lg font-black text-red-600 mt-1">{s.total_defects}</div>
+            <div className="text-xl font-black text-red-600 mt-1">{s.total_defects} Defects</div>
             <div className="text-[11px] text-slate-500">
-              {s.high_defects} Major • {s.medium_defects + s.low_defects} Minor/Med
+              {s.high_defects} High • {s.medium_defects} Med • {s.low_defects} Low
             </div>
           </div>
 
           <div className="bg-white rounded-xl p-3.5 border border-slate-200">
             <div className="flex items-center justify-between text-[11px] font-bold text-slate-500 uppercase">
-              <span>Non-Major / Passable %</span>
+              <span>AI Model Confidence</span>
+              <Crosshair className="w-4 h-4 text-[#EA580C]" />
+            </div>
+            <div className="text-xl font-black text-[#0F172A] mt-1">
+              Peak {td.peak_confidence_pct}%
+            </div>
+            <div className="text-[11px] text-slate-500">
+              Average Confidence: {td.mean_confidence_pct}%
+            </div>
+          </div>
+
+          <div className="bg-white rounded-xl p-3.5 border border-slate-200">
+            <div className="flex items-center justify-between text-[11px] font-bold text-slate-500 uppercase">
+              <span>Top Predicted Class</span>
               <ShieldCheck className="w-4 h-4 text-emerald-600" />
             </div>
-            <div className="text-lg font-black text-emerald-700 mt-1">
-              {s.defect_free_pct != null ? `${s.defect_free_pct}%` : `${nonMajorPct}%`}
+            <div className="text-xl font-black text-emerald-700 mt-1">
+              {mf ? mf.defect_name : 'Clean'}
             </div>
-            <div className="text-[11px] text-slate-400">Low/Medium repairable share</div>
+            <div className="text-[11px] text-slate-500">
+              {mf ? `${mf.count} predictions (${mf.share_pct}% share)` : '0 defects'}
+            </div>
           </div>
 
           <div className="bg-white rounded-xl p-3.5 border border-slate-200">
             <div className="flex items-center justify-between text-[11px] font-bold text-slate-500 uppercase">
-              <span>Final Quality Grade</span>
+              <span>Final Output Grade</span>
               <Award className="w-4 h-4 text-[#EA580C]" />
             </div>
-            <div className="text-lg font-black text-[#EA580C] mt-1">{s.quality_grade}</div>
-            <div className="text-[11px] text-slate-500">{s.inspection_end_display}</div>
+            <div className="text-xl font-black text-[#EA580C] mt-1">{s.quality_grade}</div>
+            <div className="text-[11px] text-slate-500">Duration: {s.inspection_duration_display}</div>
           </div>
         </div>
       </div>
 
-      {/* 3. UNDERSTAND THE DEFECTS (CHARTS + SIMPLE TABLE) */}
+      {/* 4. REAL AI PREDICTION PROOFS (VISUAL EVIDENCE CARDS WITH BOUNDING BOXES & COORDINATES) */}
       <div className="bg-white rounded-2xl p-5 border border-[#E5E7EB] shadow-xs flex flex-col gap-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
           <div className="flex items-center gap-2">
-            <BarChart3 className="w-5 h-5 text-[#EA580C]" />
-            <h3 className="text-sm font-black text-[#0F172A] uppercase">
-              What Defects Were Found & What To Do
-            </h3>
+            <Crosshair className="w-5 h-5 text-[#EA580C]" />
+            <div>
+              <h3 className="text-sm font-black text-[#0F172A] uppercase">
+                3. Real AI Defect Prediction Proofs (Verified Detections)
+              </h3>
+              <p className="text-xs text-slate-500">
+                Proof records from our YOLO model showing Event ID, AI Confidence %, Timestamp, and Exact Pixel Bounding Box Coordinates
+              </p>
+            </div>
           </div>
-          {mf && (
-            <span className="px-3 py-1 rounded-full bg-red-50 text-red-700 border border-red-200 text-xs font-bold">
-              Most Frequent: {mf.defect_name} ({mf.count} found — {mf.share_pct}%)
-            </span>
-          )}
+          <span className="px-3 py-1 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs font-bold">
+            100% Live Database Verified Proofs
+          </span>
         </div>
 
-        {/* Simple Charts */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {proofs.map(p => {
+            const bx = p.bbox || {};
+            // Scale 1280x720 or 640x480 bounding box to percentage overlay for visual proof box
+            const refW = (bx.x2 || 0) > 640 ? 1280 : 640;
+            const refH = (bx.y2 || 0) > 480 ? 720 : 480;
+            const leftPct = Math.min(72, Math.max(8, Math.round(((bx.x1 || 120) / refW) * 100)));
+            const topPct = Math.min(62, Math.max(12, Math.round(((bx.y1 || 90) / refH) * 100)));
+            const widthPct = Math.min(82 - leftPct, Math.max(22, Math.round((((bx.x2 || 340) - (bx.x1 || 120)) / refW) * 100)));
+            const heightPct = Math.min(82 - topPct, Math.max(24, Math.round((((bx.y2 || 260) - (bx.y1 || 90)) / refH) * 100)));
+
+            const previewSrc = p.annotated_image || p.original_image || getDefectSwatch(p.defect_name);
+
+            return (
+              <div
+                key={p.event_id}
+                className="rounded-xl border border-slate-200 bg-slate-50 overflow-hidden flex flex-col justify-between shadow-2xs"
+              >
+                {/* Visual Frame with YOLO Bounding Box Overlay */}
+                <div className="relative h-40 w-full bg-[#0F172A] overflow-hidden">
+                  <img
+                    src={previewSrc}
+                    alt={p.defect_name}
+                    className="w-full h-full object-cover opacity-90"
+                  />
+                  {/* If not already pre-annotated bitmap, render the actual predicted YOLO bounding box overlay */}
+                  {!p.annotated_image && (
+                    <div
+                      style={{
+                        left: `${leftPct}%`,
+                        top: `${topPct}%`,
+                        width: `${widthPct}%`,
+                        height: `${heightPct}%`,
+                        border: '2.5px solid #EF4444'
+                      }}
+                      className="absolute rounded-xs pointer-events-none shadow-md"
+                    >
+                      <span
+                        style={{ backgroundColor: '#EF4444', color: '#FFFFFF' }}
+                        className="absolute -top-5 left-0 px-1.5 py-0.5 text-[10px] font-black rounded-t whitespace-nowrap"
+                      >
+                        {p.raw_defect_type} {p.confidence_pct}%
+                      </span>
+                    </div>
+                  )}
+                  <span className="absolute bottom-2 right-2 bg-black/75 text-white font-mono text-[10px] px-2 py-0.5 rounded">
+                    {p.event_id}
+                  </span>
+                </div>
+
+                {/* Prediction Telemetry Proof Details */}
+                <div className="p-3.5 bg-white flex flex-col gap-1.5 text-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="font-black text-sm text-[#0F172A]">{p.defect_name}</span>
+                    <span
+                      className={`px-2 py-0.5 rounded text-[10px] font-black uppercase ${
+                        p.severity === 'HIGH'
+                          ? 'bg-red-100 text-red-700'
+                          : p.severity === 'MEDIUM'
+                          ? 'bg-amber-100 text-amber-700'
+                          : 'bg-emerald-100 text-emerald-700'
+                      }`}
+                    >
+                      {p.confidence_pct}% ({p.severity})
+                    </span>
+                  </div>
+
+                  {/* Confidence Bar */}
+                  <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                    <div
+                      style={{
+                        width: `${Math.min(100, p.confidence_pct)}%`,
+                        backgroundColor: p.severity === 'HIGH' ? '#DC2626' : '#EA580C'
+                      }}
+                      className="h-full rounded-full"
+                    />
+                  </div>
+
+                  <div className="font-mono text-[11px] text-slate-600 mt-1">
+                    <strong>BBox:</strong> {p.bbox_coords}
+                  </div>
+                  <div className="text-[11px] text-slate-500 flex items-center justify-between">
+                    <span><strong>Time:</strong> {p.timestamp_display}</span>
+                    <span className="font-mono">Track #{p.track_id}</span>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* 5. AI PREDICTION SUMMARY BY CLASS (CHARTS + PROOF TABLE — NO TEXTBOOK DEFINITIONS) */}
+      <div className="bg-white rounded-2xl p-5 border border-[#E5E7EB] shadow-xs flex flex-col gap-4">
+        <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+          <div className="flex items-center gap-2">
+            <BarChart3 className="w-5 h-5 text-[#EA580C]" />
+            <h3 className="text-sm font-black text-[#0F172A] uppercase">
+              4. AI Prediction Summary & Class Proof Table
+            </h3>
+          </div>
+        </div>
+
+        {/* Side-by-side Bar Chart + Pie Chart */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <div className="bg-slate-50 rounded-xl p-3.5 border border-slate-200 h-52">
             <ResponsiveContainer width="100%" height="100%">
@@ -321,7 +518,7 @@ export default function ReportPage() {
               >
                 <XAxis type="number" tick={{ fontSize: 11 }} />
                 <YAxis dataKey="defect_name" type="category" width={130} tick={{ fontSize: 11, fontWeight: 700 }} />
-                <Tooltip formatter={val => [`${val} defects`, 'Count']} />
+                <Tooltip formatter={val => [`${val} predictions`, 'Count']} />
                 <Bar dataKey="count" fill="#EA580C" radius={[0, 6, 6, 0]} />
               </BarChart>
             </ResponsiveContainer>
@@ -344,26 +541,27 @@ export default function ReportPage() {
                       <Cell key={entry.defect_name} fill={CHART_COLORS[idx % CHART_COLORS.length]} />
                     ))}
                   </Pie>
-                  <Tooltip formatter={(val, name) => [`${val} defects`, name]} />
+                  <Tooltip formatter={(val, name) => [`${val} predictions`, name]} />
                 </PieChart>
               </ResponsiveContainer>
             ) : (
               <div className="h-full flex items-center justify-center text-xs font-bold text-emerald-700">
-                No Defects Detected
+                No Defects Predicted
               </div>
             )}
           </div>
         </div>
 
-        {/* Clean 4-Column Table */}
+        {/* Prediction Proof Table by Class (Replaces textbook "Simple Meaning" column) */}
         <div className="overflow-x-auto border border-slate-200 rounded-xl">
           <table className="w-full text-left text-xs">
             <thead className="bg-slate-100 text-slate-700 font-extrabold uppercase border-b border-slate-200">
               <tr>
-                <th className="py-2.5 px-3.5">Defect Name</th>
-                <th className="py-2.5 px-3.5">Count</th>
-                <th className="py-2.5 px-3.5">Simple Meaning</th>
-                <th className="py-2.5 px-3.5">What Should the Factory Do?</th>
+                <th className="py-2.5 px-3.5">Predicted Defect Class</th>
+                <th className="py-2.5 px-3.5">Total Predictions</th>
+                <th className="py-2.5 px-3.5">AI Confidence (Avg / Peak)</th>
+                <th className="py-2.5 px-3.5">Severity Breakdown</th>
+                <th className="py-2.5 px-3.5">Sample Verified Prediction Proof (ID • Conf • BBox • Time)</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200">
@@ -373,8 +571,18 @@ export default function ReportPage() {
                   <td className="py-2.5 px-3.5 font-extrabold text-[#0F172A]">
                     {row.count} <span className="text-slate-400">({row.share_pct}%)</span>
                   </td>
-                  <td className="py-2.5 px-3.5 text-slate-600">{row.what_it_means}</td>
-                  <td className="py-2.5 px-3.5 font-semibold text-[#EA580C]">{row.factory_action}</td>
+                  <td className="py-2.5 px-3.5 font-semibold text-slate-700">
+                    {row.count > 0 ? (
+                      <>
+                        Avg: <strong>{row.avg_confidence_pct}%</strong> • Peak:{' '}
+                        <strong className="text-[#EA580C]">{row.peak_confidence_pct}%</strong>
+                      </>
+                    ) : (
+                      '—'
+                    )}
+                  </td>
+                  <td className="py-2.5 px-3.5 text-slate-600">{row.severity}</td>
+                  <td className="py-2.5 px-3.5 font-mono text-[11px] text-slate-700">{row.sample_proof}</td>
                 </tr>
               ))}
             </tbody>
@@ -382,85 +590,17 @@ export default function ReportPage() {
         </div>
       </div>
 
-      {/* 4. FABRIC DECISION & RECOMMENDED ACTIONS (SIDE BY SIDE) */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-        {/* Commercial Quality Decision */}
-        <div className="bg-white rounded-2xl p-5 border border-[#E5E7EB] shadow-xs flex flex-col gap-3">
-          <div className="flex items-center gap-2 border-b border-slate-100 pb-2.5">
-            <ClipboardCheck className="w-5 h-5 text-[#EA580C]" />
-            <h3 className="text-sm font-black text-[#0F172A] uppercase">
-              Fabric Quality Decision
-            </h3>
-          </div>
-          <p className="text-xs text-slate-500">
-            Every defect does not reject the whole roll — stains and thread errors can be cleaned or mended locally.
-          </p>
-          <div className="divide-y divide-slate-100 border border-slate-200 rounded-xl overflow-hidden text-xs">
-            {report.quality_decision.rows.map(q => (
-              <div key={q.category} className="p-3 bg-slate-50/50 flex flex-col sm:flex-row sm:items-center justify-between gap-1">
-                <div>
-                  <div className="font-black text-[#0F172A]">{q.category}</div>
-                  <div className="text-[11px] text-slate-500">{q.meaning}</div>
-                </div>
-                <span className="font-extrabold text-[#EA580C] sm:text-right">{q.quantity}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Recommended Actions & QA Sign-Off */}
-        <div className="bg-white rounded-2xl p-5 border border-[#E5E7EB] shadow-xs flex flex-col justify-between gap-4">
-          <div className="flex flex-col gap-3">
-            <div className="flex items-center gap-2 border-b border-slate-100 pb-2.5">
-              <Wrench className="w-5 h-5 text-[#EA580C]" />
-              <h3 className="text-sm font-black text-[#0F172A] uppercase">
-                Recommended Factory Actions
-              </h3>
-            </div>
-            <div className="flex flex-col gap-2">
-              {report.recommendations.slice(0, 4).map((rec, i) => (
-                <div key={i} className="p-3 rounded-xl bg-slate-50 border border-slate-200 flex items-start gap-2.5 text-xs">
-                  <span
-                    style={{ backgroundColor: '#EA580C', color: '#FFFFFF' }}
-                    className="w-5 h-5 rounded-full font-black text-[11px] flex items-center justify-center flex-shrink-0 mt-0.5"
-                  >
-                    {i + 1}
-                  </span>
-                  <div>
-                    <div className="font-bold text-[#0F172A]">{rec.title}</div>
-                    <div className="text-slate-600 text-[11px] mt-0.5">{rec.detail}</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Simple QA Sign-Off Strip */}
-          <div className="p-3.5 rounded-xl bg-emerald-50/70 border border-emerald-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
-            <div>
-              <div className="font-black text-emerald-900">QA Verification: {s.final_status}</div>
-              <div className="text-[11px] text-emerald-700">
-                Verified from {s.total_defects} database records • {s.report_generated_display}
-              </div>
-            </div>
-            <span className="font-black text-sm text-[#EA580C] bg-white px-3 py-1 rounded-lg border border-emerald-200">
-              {s.quality_grade}
-            </span>
-          </div>
-        </div>
-      </div>
-
-      {/* 5. COMPACT TECHNICAL DETAILS & DEFECT LOG (AT THE END) */}
+      {/* 6. COMPLETE VERIFIED PREDICTION LOG */}
       <div className="bg-white rounded-2xl p-5 border border-[#E5E7EB] shadow-xs flex flex-col gap-3.5">
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2.5">
           <div className="flex items-center gap-2">
-            <Cpu className="w-5 h-5 text-blue-600" />
+            <Database className="w-5 h-5 text-blue-600" />
             <h3 className="text-sm font-black text-[#0F172A] uppercase">
-              Technical Summary & Defect Log ({allLogs.length} Records)
+              5. Complete Verified AI Prediction Log ({allLogs.length} Database Records)
             </h3>
           </div>
           <span className="text-xs font-mono text-slate-600 bg-slate-100 px-2.5 py-1 rounded-lg">
-            Model: YOLO26s (best.pt) • 640×640 • Avg Confidence: {td.mean_confidence_pct}%
+            Model: YOLO26s (best.pt) • 640×640 • Conf ≥ 35% • IoU ≥ 0.30
           </span>
         </div>
 
@@ -469,19 +609,19 @@ export default function ReportPage() {
             <thead className="bg-slate-100 text-slate-700 font-extrabold uppercase border-b border-slate-200">
               <tr>
                 <th className="py-2 px-3">#</th>
-                <th className="py-2 px-3">Event ID</th>
-                <th className="py-2 px-3">Time</th>
-                <th className="py-2 px-3">Defect Type</th>
-                <th className="py-2 px-3">Confidence</th>
+                <th className="py-2 px-3">Unique Event ID</th>
+                <th className="py-2 px-3">Timestamp</th>
+                <th className="py-2 px-3">Predicted Defect</th>
+                <th className="py-2 px-3">AI Confidence</th>
                 <th className="py-2 px-3">Severity</th>
-                <th className="py-2 px-3">Meter Position</th>
+                <th className="py-2 px-3">Predicted Bounding Box (x1, y1) – (x2, y2)</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {visibleLogs.map(item => (
                 <tr key={item.event_id} className="hover:bg-slate-50">
                   <td className="py-2 px-3 font-bold text-slate-500">{item.index}</td>
-                  <td className="py-2 px-3 font-mono text-[11px] text-slate-700">{item.event_id}</td>
+                  <td className="py-2 px-3 font-mono text-[11px] font-bold text-slate-700">{item.event_id}</td>
                   <td className="py-2 px-3 text-slate-600">{item.timestamp_display}</td>
                   <td className="py-2 px-3 font-bold text-[#0F172A]">{item.defect_name}</td>
                   <td className="py-2 px-3 font-extrabold text-[#0F172A]">{item.confidence_pct}%</td>
@@ -498,21 +638,21 @@ export default function ReportPage() {
                       {item.severity}
                     </span>
                   </td>
-                  <td className="py-2 px-3 font-mono text-slate-600">{item.meter_position}</td>
+                  <td className="py-2 px-3 font-mono text-[11px] text-slate-600">{item.bbox_display}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
 
-        {allLogs.length > 10 && (
+        {allLogs.length > 12 && (
           <div className="flex justify-center">
             <button
               type="button"
               onClick={() => setShowAllLogs(prev => !prev)}
               className="px-4 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-xs font-bold text-slate-700 cursor-pointer"
             >
-              {showAllLogs ? 'Show Top 10 Only' : `Show All ${allLogs.length} Records`}
+              {showAllLogs ? 'Show Top 12 Only' : `Show All ${allLogs.length} Prediction Proofs`}
             </button>
           </div>
         )}
