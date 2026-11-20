@@ -492,7 +492,7 @@ export default function ReportPage() {
         </div>
 
         {/* Download & View Mode Actions */}
-        <div className="flex flex-wrap items-center gap-2.5">
+        <div className="flex flex-wrap items-center gap-3">
           {/* View Toggle */}
           <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200">
             {[
@@ -504,7 +504,7 @@ export default function ReportPage() {
                 key={tab.id}
                 type="button"
                 onClick={() => setViewMode(tab.id)}
-                className={`px-2.5 py-1 text-xs font-bold rounded-lg transition-all ${
+                className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all whitespace-nowrap ${
                   viewMode === tab.id
                     ? 'bg-white text-[#EA580C] shadow-xs'
                     : 'text-slate-600 hover:text-slate-900'
@@ -518,18 +518,20 @@ export default function ReportPage() {
           <button
             type="button"
             onClick={handlePrintOrDownloadPDF}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#EA580C] hover:bg-[#C2410C] text-white text-xs font-extrabold shadow-sm transition-all cursor-pointer"
+            style={{ backgroundColor: '#EA580C', color: '#FFFFFF', padding: '8px 16px' }}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-[#EA580C] to-[#F97316] hover:opacity-95 text-white text-xs font-extrabold shadow-sm transition-all cursor-pointer whitespace-nowrap"
           >
-            <Printer className="w-4 h-4" />
+            <Printer className="w-4 h-4 flex-shrink-0" />
             <span>Download / Print PDF Report</span>
           </button>
 
           <button
             type="button"
             onClick={handleDownloadCSV}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-[#0F172A] hover:bg-[#1E293B] text-white text-xs font-extrabold shadow-sm transition-all cursor-pointer"
+            style={{ backgroundColor: '#0F172A', color: '#FFFFFF', padding: '8px 16px' }}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-[#0F172A] hover:bg-[#1E293B] text-white text-xs font-extrabold shadow-sm transition-all cursor-pointer whitespace-nowrap"
           >
-            <Download className="w-4 h-4" />
+            <Download className="w-4 h-4 flex-shrink-0" />
             <span>Download Excel (CSV)</span>
           </button>
         </div>
