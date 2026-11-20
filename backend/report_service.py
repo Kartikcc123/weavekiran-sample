@@ -1482,27 +1482,17 @@ def generate_report_pdf_bytes(report: Dict[str, Any]) -> bytes:
     story.append(qa_table)
 
     # ---------- SECTION 7: TECHNICAL DETAILS (AT THE END) ----------
-    story.append(PageBreak())
-    story.append(Paragraph("Section 7 – Technical Details & Complete Detection Log (For Engineers & Auditors)", sec_heading))
+    story.append(Paragraph("Section 7 – Technical Summary & Recent Defect Log", sec_heading))
     td = report["technical_details"]
 
     tech_rows = [
-        [Paragraph("<b>Parameter</b>", th_style), Paragraph("<b>Configuration / Measured Value</b>", th_style), Paragraph("<b>Simple Explanation</b>", th_style)],
-        [Paragraph("<b>YOLO AI Model</b>", cell_bold), Paragraph(td["ai_model_name"], cell_style), Paragraph("Computer vision neural network trained specifically to spot textile defects on moving fabric.", cell_style)],
-        [Paragraph("<b>Model Weights (best.pt)</b>", cell_bold), Paragraph(td["weights_file"], cell_style), Paragraph("Custom trained weights recognizing 5 defect classes with mean confidence " + f"{td['mean_confidence_pct']}% (peak {td['peak_confidence_pct']}%).", cell_style)],
-        [Paragraph("<b>Image Resolution</b>", cell_bold), Paragraph(td["image_resolution"], cell_style), Paragraph("Each video frame is scaled to 640×640 pixels for real-time AI analysis.", cell_style)],
-        [Paragraph("<b>Confidence Threshold</b>", cell_bold), Paragraph(td["confidence_threshold"], cell_style), Paragraph("How sure the AI is (0–100%). Detections below 35% are ignored to avoid false alarms.", cell_style)],
-        [Paragraph("<b>IoU Threshold</b>", cell_bold), Paragraph(td["iou_threshold"], cell_style), Paragraph("Intersection-over-Union measures box overlap between frames so a moving defect is counted only once.", cell_style)],
-        [Paragraph("<b>Tracking Methodology</b>", cell_bold), Paragraph(td["tracking_methodology"], cell_style), Paragraph("Prevents duplicate defect counts while the cloth moves under the camera.", cell_style)],
-        [Paragraph("<b>Grading Methodology & ASTM Note</b>", cell_bold), Paragraph(td["grading_methodology_note"], cell_style), Paragraph("Clarifies why severity rules are used when physical linear/square yard dimensions are unmeasured.", cell_style)],
-        [Paragraph("<b>Camera Pipeline</b>", cell_bold), Paragraph(td["camera_info"], cell_style), Paragraph("Supports live browser camera streaming over HTTPS/WebSocket as well as local USB/DroidCam.", cell_style)],
-        [Paragraph("<b>Arduino & Loom Hardware</b>", cell_bold), Paragraph(td["arduino_integration"], cell_style), Paragraph("Controls physical loom drive motors exclusively from the owner's authorized hardware port.", cell_style)],
-        [Paragraph("<b>System Verification</b>", cell_bold), Paragraph(td["system_verification"], cell_style), Paragraph("All report figures are computed directly from stored MongoDB records.", cell_style)],
+        [Paragraph("<b>AI Model & Weights</b>", cell_bold), Paragraph(f"{td['ai_model_name']} ({td['weights_file']})", cell_style), Paragraph("<b>Mean / Peak Confidence</b>", cell_bold), Paragraph(f"{td['mean_confidence_pct']}% / {td['peak_confidence_pct']}%", cell_style)],
+        [Paragraph("<b>Resolution & Thresholds</b>", cell_bold), Paragraph(f"640×640 px • Conf >= 35% • IoU >= 0.30", cell_style), Paragraph("<b>Hardware Status</b>", cell_bold), Paragraph(td["arduino_integration"], cell_style)],
     ]
-    tech_table = Table(tech_rows, colWidths=[36 * mm, 82 * mm, 62 * mm], repeatRows=1)
+    tech_table = Table(tech_rows, colWidths=[35 * mm, 65 * mm, 35 * mm, 45 * mm])
     tech_table.setStyle(
         TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F1F5F9")),
+            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F8FAFC")),
             ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#CBD5E1")),
             ("INNERGRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#E2E8F0")),
             ("TOPPADDING", (0, 0), (-1, -1), 4),
@@ -1515,35 +1505,10 @@ def generate_report_pdf_bytes(report: Dict[str, Any]) -> bytes:
     story.append(tech_table)
     story.append(Spacer(1, 6))
 
-    story.append(Paragraph("<b>Data Integrity & Verification Audit Flags:</b>", body_bold))
-    story.append(Spacer(1, 3))
-    flag_rows = [[Paragraph("<b>Audit Check</b>", th_style), Paragraph("<b>Status</b>", th_style), Paragraph("<b>Verification Notes</b>", th_style)]]
-    for af in td["audit_flags"]:
-        flag_rows.append([
-            Paragraph(f"<b>{af['type']}</b>", cell_bold),
-            Paragraph(af["status"], cell_bold),
-            Paragraph(af["detail"], cell_style),
-        ])
-    flag_table = Table(flag_rows, colWidths=[45 * mm, 35 * mm, 100 * mm], repeatRows=1)
-    flag_table.setStyle(
-        TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F1F5F9")),
-            ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#CBD5E1")),
-            ("INNERGRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#E2E8F0")),
-            ("TOPPADDING", (0, 0), (-1, -1), 3.5),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 3.5),
-            ("LEFTPADDING", (0, 0), (-1, -1), 4.5),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 4.5),
-            ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ])
-    )
-    story.append(flag_table)
-    story.append(Spacer(1, 8))
-
-    logs = report["defect_log"]
+    logs = report["defect_log"][:15]
     story.append(
         Paragraph(
-            f"<b>Complete Defect Position & Detection Log ({len(logs)} actual database records in scope):</b>",
+            f"<b>Recent Defect Detection Log (Showing Top {len(logs)} of {len(report['defect_log'])} Records):</b>",
             body_bold,
         )
     )
