@@ -235,21 +235,33 @@ async def process_frame(frame, force_broadcast=False):
 
             event_id = f"DEF-{datetime.now().strftime('%Y%m%d')}-{tid:06d}"
 
+            # Draw annotated snapshot specifically for this new physical defect (with real-time timestamp)
             annotated_copy = raw_frame.copy()
             bx = d["bbox"]
             c_col = (
-                (0, 0, 200)
+                (0, 0, 220)
                 if d["confidence"] >= 0.80
-                else ((0, 165, 255) if d["confidence"] >= 0.60 else (128, 128, 128))
+                else ((0, 140, 255) if d["confidence"] >= 0.60 else (16, 185, 129))
             )
-            cv2.rectangle(annotated_copy, (bx["x1"], bx["y1"]), (bx["x2"], bx["y2"]), c_col, 2)
+            cv2.rectangle(annotated_copy, (bx["x1"], bx["y1"]), (bx["x2"], bx["y2"]), c_col, 3)
+            label_txt = f'{d["class_name"]} {round(d["confidence"] * 100)}%'
             cv2.putText(
                 annotated_copy,
-                f'{d["class_name"]} {d["confidence"]:.2f}',
+                label_txt,
                 (bx["x1"], max(25, bx["y1"] - 8)),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
+                0.75,
                 c_col,
+                2,
+            )
+            ts_stamp = datetime.now().strftime("LIVE %d-%b-%Y %I:%M:%S %p")
+            cv2.putText(
+                annotated_copy,
+                ts_stamp,
+                (12, annotated_copy.shape[0] - 14),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (255, 255, 255),
                 2,
             )
             orig_data_url = _encode_evidence_data_url(raw_frame)
