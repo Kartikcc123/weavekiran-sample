@@ -1,6 +1,6 @@
 import os
+import threading
 from dotenv import load_dotenv
-from ultralytics import YOLO
 
 load_dotenv()
 
@@ -17,21 +17,37 @@ elif os.path.exists(r"D:\Weave-kiran\best.pt"):
 else:
     MODEL_PATH = os.getenv("MODEL_PATH", "best.pt")
 
-model = YOLO(MODEL_PATH)
+_model = None
+_model_lock = threading.Lock()
 
-CLASS_NAMES = model.names
+DEFAULT_CLASS_NAMES = {
+    0: "Stain",
+    1: "Thread",
+    2: "Warp_Weft",
+    3: "hole",
+    4: "seam",
+}
 
 # Watermark exclusion filter configuration (for DroidCam free watermark "using droidcam.app")
 WATERMARK_FILTER_ENABLED = os.getenv("WATERMARK_FILTER_ENABLED", "true").lower() in ("true", "1", "yes")
 
 
+def get_model():
+    """Lazy-load YOLO model after uvicorn binds the port to prevent cloud startup 503 timeouts & save RAM."""
+    global _model
+    if _model is None:
+        with _model_lock:
+            if _model is None:
+                import torch
+                from ultralytics import YOLO
+                torch.set_num_threads(max(1, min(2, os.cpu_count() or 1)))
+                print(f"[YOLO] Loading model from {MODEL_PATH}...")
+                _model = YOLO(MODEL_PATH)
+                print("[YOLO] Model loaded successfully.")
+    return _model
+
+
 def is_watermark_artifact(x1, y1, x2, y2, frame):
-    """
-    Intelligent filter to detect DroidCam watermark false positives:
-    1. Black/Dark frame (camera idle/covered) -> all detections are screensaver artifacts
-    2. Wide text banner detection (aspect ratio > 3.8, width > 22%, height < 16%)
-    3. Individual watermark letter detections with high-contrast text in DroidCam drift band
-    """
     if not WATERMARK_FILTER_ENABLED:
         return False
 
@@ -44,8 +60,6 @@ def is_watermark_artifact(x1, y1, x2, y2, frame):
     if box_w <= 0 or box_h <= 0:
         return False
 
-    # 1. Dark/idle frame: if camera sensor is covered or DroidCam is idling
-    # (mean pixel intensity < 15), there is no fabric under inspection.
     if frame.mean() < 15.0:
         return True
 
@@ -54,20 +68,15 @@ def is_watermark_artifact(x1, y1, x2, y2, frame):
     rel_h = box_h / float(frame_h)
     cy = ((y1 + y2) / 2.0) / float(frame_h)
 
-    # 2. Entire watermark banner ("using droidcam.app"):
-    # DroidCam watermark has an extreme text aspect ratio (~7:1 to 9:1),
-    # spans 22% - 60% of the screen width, and is very thin (< 16% height).
     if aspect_ratio >= 3.8 and rel_w >= 0.22 and rel_h <= 0.16:
         return True
 
-    # 3. Individual letters or word fragments inside DroidCam's vertical drift band (25% - 75%)
     if 0.25 <= cy <= 0.75 and rel_h <= 0.08 and aspect_ratio >= 1.5:
         patch = frame[max(0, y1):min(frame_h, y2), max(0, x1):min(frame_w, x2)]
         if patch.size > 0:
             import cv2
             import numpy as np
             gray_patch = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
-            # DroidCam font has bright white pixels (> 210) with sharp edges
             if np.mean(gray_patch > 210) > 0.08:
                 return True
 
@@ -75,6 +84,9 @@ def is_watermark_artifact(x1, y1, x2, y2, frame):
 
 
 def detect(frame, confidence=0.35):
+    model = get_model()
+    class_names = getattr(model, "names", DEFAULT_CLASS_NAMES)
+
     results = model.predict(
         source=frame,
         conf=confidence,
@@ -84,7 +96,6 @@ def detect(frame, confidence=0.35):
     )
 
     result = results[0]
-
     detections = []
 
     for box in result.boxes:
@@ -96,13 +107,12 @@ def detect(frame, confidence=0.35):
             box.xyxy[0].tolist()
         )
 
-        # Exclude DroidCam watermark false positives
         if is_watermark_artifact(x1, y1, x2, y2, frame):
             continue
 
         detections.append({
             "class_id": class_id,
-            "class_name": CLASS_NAMES[class_id],
+            "class_name": class_names.get(class_id, str(class_id)) if isinstance(class_names, dict) else class_names[class_id],
             "confidence": round(conf, 3),
             "bbox": {
                 "x1": x1,
