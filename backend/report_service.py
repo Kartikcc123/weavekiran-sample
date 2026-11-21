@@ -5,11 +5,7 @@ import base64
 from collections import Counter
 from datetime import datetime
 import io
-from pathlib import Path
 from typing import Any, Dict, List, Optional
-
-import cv2
-import numpy as np
 
 from reportlab.graphics.charts.barcharts import HorizontalBarChart
 from reportlab.graphics.charts.piecharts import Pie
@@ -35,55 +31,6 @@ CANONICAL_CATEGORIES = [
     "Warp/Weft Irregularities",
     "Seam/Joint Marks",
 ]
-
-
-_PROJECT_ROOT = Path(__file__).resolve().parents[1]
-_DEFECTS_DIR = (
-    _PROJECT_ROOT / "app" / "public" / "defects"
-    if (_PROJECT_ROOT / "app" / "public" / "defects").is_dir()
-    else _PROJECT_ROOT / "app" / "dist" / "defects"
-)
-_BACKUP_IMAGES = {
-    "Holes": _DEFECTS_DIR / "hole.jpg",
-    "Stains": _DEFECTS_DIR / "stain.jpg",
-    "Thread Errors": _DEFECTS_DIR / "thread.jpg",
-    "Warp/Weft Irregularities": _DEFECTS_DIR / "warp_weft.jpg",
-    "Seam/Joint Marks": _DEFECTS_DIR / "knot.jpg",
-}
-
-
-def _generate_backup_annotated_data_url(category: str, raw_type: str, conf_pct: float, ts_str: str) -> Optional[str]:
-    """Load backup previously-detected fabric defect image and draw a YOLO bounding box + timestamp on it."""
-    img_path = _BACKUP_IMAGES.get(category) or _BACKUP_IMAGES.get("Holes")
-    if not img_path or not img_path.is_file():
-        return None
-    try:
-        img = cv2.imread(str(img_path))
-        if img is None:
-            return None
-        h, w = img.shape[:2]
-        if w > 420:
-            scale = 420.0 / float(w)
-            img = cv2.resize(img, (420, max(1, int(h * scale))))
-            h, w = img.shape[:2]
-
-        # Draw crisp YOLO bounding box over center defect region
-        x1, y1 = int(w * 0.22), int(h * 0.20)
-        x2, y2 = int(w * 0.78), int(h * 0.80)
-        col = (0, 0, 230) if conf_pct >= 80 else (0, 110, 255)
-        cv2.rectangle(img, (x1, y1), (x2, y2), col, 3)
-
-        lbl = f"{raw_type} {conf_pct}%"
-        cv2.rectangle(img, (x1, max(0, y1 - 22)), (min(w - 2, x1 + 135), y1), col, -1)
-        cv2.putText(img, lbl, (x1 + 5, max(15, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 255), 2)
-        cv2.putText(img, ts_str, (10, h - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
-
-        ok, buf = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
-        if ok:
-            return "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode("ascii")
-    except Exception:
-        pass
-    return None
 
 
 def map_canonical_category(raw_type: Optional[str]) -> str:
@@ -378,51 +325,23 @@ def build_report_data(
 
     prediction_proofs = []
     for r in live_image_records[:6]:
-        bbox = r.get("bbox") or {"x1": 140, "y1": 95, "x2": 420, "y2": 310}
+        bbox = r.get("bbox") or {}
         w_px = max(0, int(bbox.get("x2", 0)) - int(bbox.get("x1", 0)))
         h_px = max(0, int(bbox.get("y2", 0)) - int(bbox.get("y1", 0)))
-        cat_name = r["category"]
-        sev = r["severity"]
-
-        # Per-proof usability & keep/return suggestion based on defect prediction
-        if cat_name == "Holes" and sev == "HIGH":
-            proof_usable = "NOT USABLE AT THIS SPOT (MAJOR HOLE)"
-            proof_sujhav = "Cut 0.20m hole spot • Agar poore roll me zyada ho toh ROLL RETURN KAREIN"
-            proof_keep = False
-        elif cat_name == "Holes":
-            proof_usable = "PARTIALLY USABLE (MINOR PIN-HOLE)"
-            proof_sujhav = "Rakhna Chahiye (Keep Roll) — Stitching ke waqt is spot ko trim/skip karein"
-            proof_keep = True
-        elif cat_name == "Stains":
-            proof_usable = "USABLE AFTER SPOT-CLEAN / WASH"
-            proof_sujhav = "Rakhna Chahiye (Keep Roll) — Halka stain hai, washing/cleaning se saaf ho jayega"
-            proof_keep = True
-        else:
-            proof_usable = "100% USABLE (MINOR THREAD / SEAM)"
-            proof_sujhav = "Rakhna Chahiye (Keep Roll) — Sirf loose thread trim karein, return ki zaroorat nahi"
-            proof_keep = True
-
-        ann_img = r.get("annotated_image") or _generate_backup_annotated_data_url(
-            cat_name, r["raw_defect_type"], r["confidence_pct"], r["timestamp_display"]
-        )
-
         prediction_proofs.append({
             "event_id": r["event_id"],
             "track_id": r.get("track_id") or 1,
-            "defect_name": cat_name,
+            "defect_name": r["category"],
             "raw_defect_type": r["raw_defect_type"],
             "confidence_pct": r["confidence_pct"],
-            "severity": sev,
+            "severity": r["severity"],
             "timestamp_display": r["timestamp_display"],
             "meter_position": r.get("meter_position", "1.50 m"),
             "bbox": bbox,
             "bbox_coords": f"({bbox.get('x1', 0)}, {bbox.get('y1', 0)}) – ({bbox.get('x2', 0)}, {bbox.get('y2', 0)}) [{w_px}×{h_px} px]",
             "original_image": r.get("original_image"),
-            "annotated_image": ann_img,
+            "annotated_image": r.get("annotated_image"),
             "is_live_capture": bool(r.get("annotated_image")),
-            "proof_usable": proof_usable,
-            "proof_sujhav": proof_sujhav,
-            "proof_keep": proof_keep,
         })
 
     # Clean records for table

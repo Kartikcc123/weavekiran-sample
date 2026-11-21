@@ -33,93 +33,6 @@ import { getDefectSwatch } from '../utils/swatches';
 
 const CHART_COLORS = ['#DC2626', '#EA580C', '#2563EB', '#7C3AED', '#0D9488'];
 
-const BACKUP_DETECTED_PROOFS = [
-  {
-    event_id: 'DEF-BACKUP-001',
-    defect_name: 'Stains',
-    raw_defect_type: 'Stain',
-    confidence_pct: 87.5,
-    severity: 'HIGH',
-    timestamp_display: '21 Nov 2026, 06:13:54 AM',
-    meter_position: '14.20 m',
-    bbox: { x1: 240, y1: 110, x2: 490, y2: 310 },
-    bbox_coords: '(240, 110) – (490, 310) [250×200 px]',
-    proof_usable: 'USABLE AFTER SPOT-CLEAN / WASH',
-    proof_sujhav: 'Rakhna Chahiye (Keep Roll) — Spot-wash se saaf ho jayega, return na karein',
-    proof_keep: true
-  },
-  {
-    event_id: 'DEF-BACKUP-002',
-    defect_name: 'Holes',
-    raw_defect_type: 'hole',
-    confidence_pct: 83.9,
-    severity: 'HIGH',
-    timestamp_display: '21 Nov 2026, 06:12:30 AM',
-    meter_position: '28.50 m',
-    bbox: { x1: 260, y1: 130, x2: 470, y2: 320 },
-    bbox_coords: '(260, 130) – (470, 320) [210×190 px]',
-    proof_usable: 'NOT USABLE AT THIS SPOT (CUT 0.20m)',
-    proof_sujhav: 'Cut 0.20m Hole Spot — Agar poore roll me zyada holes hon tabhi Return karein',
-    proof_keep: false
-  },
-  {
-    event_id: 'DEF-BACKUP-003',
-    defect_name: 'Thread Errors',
-    raw_defect_type: 'Thread',
-    confidence_pct: 78.4,
-    severity: 'MEDIUM',
-    timestamp_display: '21 Nov 2026, 06:11:15 AM',
-    meter_position: '42.10 m',
-    bbox: { x1: 210, y1: 120, x2: 510, y2: 290 },
-    bbox_coords: '(210, 120) – (510, 290) [300×170 px]',
-    proof_usable: '100% USABLE (MINOR LOOSE THREAD)',
-    proof_sujhav: 'Rakhna Chahiye (Keep Roll) — Sirf loose thread trim karein, kapda usable hai',
-    proof_keep: true
-  },
-  {
-    event_id: 'DEF-BACKUP-004',
-    defect_name: 'Stains',
-    raw_defect_type: 'Stain',
-    confidence_pct: 76.2,
-    severity: 'MEDIUM',
-    timestamp_display: '21 Nov 2026, 06:10:40 AM',
-    meter_position: '64.80 m',
-    bbox: { x1: 230, y1: 140, x2: 460, y2: 310 },
-    bbox_coords: '(230, 140) – (460, 310) [230×170 px]',
-    proof_usable: 'USABLE AFTER CLEANING',
-    proof_sujhav: 'Rakhna Chahiye (Keep Roll) — Halka oil mark hai, finishing me saaf ho jayega',
-    proof_keep: true
-  },
-  {
-    event_id: 'DEF-BACKUP-005',
-    defect_name: 'Warp/Weft Irregularities',
-    raw_defect_type: 'Warp_Weft',
-    confidence_pct: 74.1,
-    severity: 'MEDIUM',
-    timestamp_display: '21 Nov 2026, 06:09:22 AM',
-    meter_position: '96.30 m',
-    bbox: { x1: 190, y1: 130, x2: 520, y2: 280 },
-    bbox_coords: '(190, 130) – (520, 280) [330×150 px]',
-    proof_usable: 'USABLE FOR STANDARD PANELS',
-    proof_sujhav: 'Rakhna Chahiye (Keep Roll) — Minor weave line hai, inner/back panels me use karein',
-    proof_keep: true
-  },
-  {
-    event_id: 'DEF-BACKUP-006',
-    defect_name: 'Holes',
-    raw_defect_type: 'hole',
-    confidence_pct: 71.8,
-    severity: 'MEDIUM',
-    timestamp_display: '21 Nov 2026, 06:08:10 AM',
-    meter_position: '124.50 m',
-    bbox: { x1: 250, y1: 125, x2: 465, y2: 305 },
-    bbox_coords: '(250, 125) – (465, 305) [215×180 px]',
-    proof_usable: 'PARTIALLY USABLE (TRIM SPOT)',
-    proof_sujhav: 'Rakhna Chahiye (Keep Roll) — Chhota pin-hole spot mark karke cutting me hata dein',
-    proof_keep: true
-  }
-];
-
 export default function ReportPage() {
   const { recentDetections } = useSimulation();
 
@@ -236,8 +149,7 @@ export default function ReportPage() {
   if (!report) return null;
 
   const s = report.summary;
-  const rawProofs = report.prediction_proofs || [];
-  const proofs = rawProofs.length > 0 ? rawProofs : BACKUP_DETECTED_PROOFS;
+  const proofs = report.prediction_proofs || [];
   const pieData = report.defect_breakdown.rows.filter(r => r.count > 0);
 
   return (
@@ -510,47 +422,21 @@ export default function ReportPage() {
                   </div>
                 </div>
 
-                {/* Proof Footer + Keep / Return Sujhav Box */}
-                <div className="p-3.5 bg-white flex flex-col gap-2 text-xs border-t border-slate-200">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <div className="font-black text-sm text-[#0F172A]">{p.defect_name}</div>
-                      <div className="font-mono text-[10px] text-slate-500">Box: {p.bbox_coords}</div>
-                    </div>
-                    <span
-                      className={`px-2.5 py-1 rounded-lg text-xs font-black ${
-                        p.severity === 'HIGH'
-                          ? 'bg-red-100 text-red-700'
-                          : 'bg-amber-100 text-amber-800'
-                      }`}
-                    >
-                      {p.confidence_pct}% AI Conf
-                    </span>
+                {/* Proof Footer */}
+                <div className="p-3 bg-slate-50 flex items-center justify-between text-xs border-t border-slate-200">
+                  <div>
+                    <div className="font-black text-[#0F172A]">{p.defect_name}</div>
+                    <div className="font-mono text-[10px] text-slate-500">Box: {p.bbox_coords}</div>
                   </div>
-
-                  {/* Per-Prediction Usability & Keep/Return Suggestion Box */}
-                  <div
-                    className={`p-2.5 rounded-lg border text-[11px] leading-snug ${
-                      p.proof_keep === false
-                        ? 'bg-red-50 border-red-200 text-red-900'
-                        : 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                  <span
+                    className={`px-2.5 py-1 rounded-lg text-xs font-black ${
+                      p.severity === 'HIGH'
+                        ? 'bg-red-100 text-red-700'
+                        : 'bg-amber-100 text-amber-800'
                     }`}
                   >
-                    <div className="font-black uppercase tracking-wide flex items-center justify-between">
-                      <span>{p.proof_usable || 'USABLE AFTER MINOR TOUCH-UP'}</span>
-                      <span
-                        className={`px-1.5 py-0.5 rounded text-[9px] font-black ${
-                          p.proof_keep === false ? 'bg-red-600 text-white' : 'bg-emerald-600 text-white'
-                        }`}
-                      >
-                        {p.proof_keep === false ? 'CUT / RETURN SPOT' : 'RAKHNA CHAHIYE (KEEP)'}
-                      </span>
-                    </div>
-                    <div className="mt-1 font-semibold">
-                      <strong>सुझाव (Suggestion):</strong>{' '}
-                      {p.proof_sujhav || 'Rakhna Chahiye (Keep Roll) — Minor spot trim/clean karke use karein'}
-                    </div>
-                  </div>
+                    {p.confidence_pct}% AI Conf
+                  </span>
                 </div>
               </div>
             );

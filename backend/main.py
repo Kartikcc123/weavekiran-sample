@@ -473,8 +473,10 @@ async def async_background_loop():
             await asyncio.sleep(0.5)
 
 
-async def _init_background_services():
+@app.on_event("startup")
+async def startup_event():
     await db.connect()
+    # Hydrate today's saved stats & next unique track_id from MongoDB so existing data is never lost or duplicated
     if db.connected:
         try:
             saved_stats = await db.get_stats()
@@ -491,12 +493,6 @@ async def _init_background_services():
             print(f"[STARTUP] Could not hydrate initial stats: {e}")
     arduino.start()
     asyncio.create_task(async_background_loop())
-
-
-@app.on_event("startup")
-async def startup_event():
-    # Launch DB connection and background loop asynchronously so Uvicorn binds $PORT immediately (prevents cloud 503 startup timeouts)
-    asyncio.create_task(_init_background_services())
 
 
 @app.on_event("shutdown")

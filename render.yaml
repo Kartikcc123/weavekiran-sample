@@ -2,8 +2,5 @@ services:
   - type: web
     name: weave-kiran
     runtime: python
-    buildCommand: pip install --upgrade pip && pip install typing-extensions jinja2 fsspec networkx sympy filelock mpmath numpy pillow && pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple && pip install -r requirements.txt && pip uninstall -y opencv-python opencv-python-headless && pip install opencv-python-headless && cd app && npm ci && npm run build
+    buildCommand: pip install -r requirements.txt && cd app && npm ci && npm run build
     startCommand: cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT
-    envVars:
-      - key: ARDUINO_ENABLED
-        value: "0"
